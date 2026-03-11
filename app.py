@@ -38,8 +38,15 @@ except ImportError:
     RTF_AVAILABLE = False
 
 try:
+    from PIL import Image as PILImage, ImageDraw as PILImageDraw
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+
+try:
     import pytesseract
-    from PIL import Image as PILImage
+    if not PIL_AVAILABLE:
+        from PIL import Image as PILImage  # ensure PILImage defined even if above block failed
     # Confirm the Tesseract binary is actually present before claiming it's available
     pytesseract.get_tesseract_version()
     TESSERACT_AVAILABLE = True
@@ -892,6 +899,65 @@ def _text_to_fitz(text: str, title: str = "") -> fitz.Document:
     if len(doc) == 0:
         doc.new_page(width=PAGE_W, height=PAGE_H)
     return doc
+
+
+def _render_context_preview(
+    doc: fitz.Document,
+    search_text: str,
+    dpi: int = 130,
+    context_px: int = 260,
+) -> tuple:
+    """Render the page containing search_text as PNG bytes with a yellow highlight.
+
+    Crops to ±context_px pixels above/below the match so the reviewer sees
+    only the relevant portion rather than the full page.
+    Returns (png_bytes | None, 1-based page_num, found: bool).
+    """
+    if not search_text or doc is None or not PIL_AVAILABLE:
+        return None, 0, False
+
+    search_norm = " ".join(search_text.split())
+    candidates = [search_norm, search_norm.lower(), search_norm.upper(), search_norm.title()]
+
+    for page_num, page in enumerate(doc):
+        rects = []
+        for variant in candidates:
+            rects = page.search_for(variant)
+            if rects:
+                break
+        if not rects:
+            continue
+
+        scale = dpi / 72.0
+        pix   = page.get_pixmap(dpi=dpi)
+        img   = PILImage.frombytes("RGB", [pix.width, pix.height], pix.samples).convert("RGBA")
+
+        # Semi-transparent yellow highlight overlay
+        overlay = PILImage.new("RGBA", img.size, (0, 0, 0, 0))
+        draw    = PILImageDraw.Draw(overlay)
+        all_y   = []
+        for rect in rects:
+            x0 = max(0,          int(rect.x0 * scale) - 4)
+            y0 = max(0,          int(rect.y0 * scale) - 4)
+            x1 = min(img.width,  int(rect.x1 * scale) + 4)
+            y1 = min(img.height, int(rect.y1 * scale) + 4)
+            draw.rectangle([x0, y0, x1, y1], fill=(255, 210, 0, 170))
+            draw.rectangle([x0, y0, x1, y1], outline=(200, 80, 0, 255), width=2)
+            all_y += [y0, y1]
+
+        combined = PILImage.alpha_composite(img, overlay).convert("RGB")
+
+        # Crop to a window centred on the highlighted area
+        cy      = (min(all_y) + max(all_y)) // 2
+        crop_y0 = max(0,              cy - context_px)
+        crop_y1 = min(combined.height, cy + context_px)
+        cropped = combined.crop((0, crop_y0, combined.width, crop_y1))
+
+        buf = io.BytesIO()
+        cropped.save(buf, format="PNG")
+        return buf.getvalue(), page_num + 1, True
+
+    return None, 0, False
 
 
 def ingest_file(uploaded_file) -> tuple:
@@ -1849,6 +1915,56 @@ elif st.session_state.stage == "review":
                                 f"**{tag_info.get('label', r.get('tag', ''))}** "
                                 f"— `{r.get('text', '')}`  \n"
                                 f"*{r.get('reason', '')}*"
+                            )
+
+            # ── Context preview panel ─────────────────────────────────────────
+            _all_items = analysis["proposed_redactions"] + [
+                {**e, "_is_esc": True} for e in analysis.get("escalations", [])
+            ]
+            if _all_items and analysis.get("doc") and PIL_AVAILABLE:
+                st.markdown("#### 🔍 Context Preview")
+                _prev_options = ["— select a redaction to preview —"] + [
+                    f"{'⚠ ' if r.get('_is_esc') else ''}[{REDACTION_TAGS.get(r.get('tag',''),{}).get('label', r.get('tag',''))}]  {r.get('text','')[:70]}"
+                    for r in _all_items
+                ]
+                _prev_sel = st.selectbox(
+                    "Preview term in document:",
+                    _prev_options,
+                    key=f"prev_sel_{i}",
+                    label_visibility="collapsed",
+                )
+                if _prev_sel and _prev_sel != _prev_options[0]:
+                    _sel_idx  = _prev_options.index(_prev_sel) - 1
+                    _sel_item = _all_items[_sel_idx]
+                    _sel_text = _sel_item.get("text", "")
+                    _tag_info = REDACTION_TAGS.get(_sel_item.get("tag", ""), {})
+
+                    _pcol1, _pcol2 = st.columns([2, 3])
+                    with _pcol1:
+                        st.markdown(f"**{_tag_info.get('label', _sel_item.get('tag', ''))}**")
+                        st.caption(_sel_item.get("reason", ""))
+                        st.code(_sel_text, language=None)
+                        _ctx = _sel_item.get("context", "")
+                        if _ctx:
+                            st.markdown("**Surrounding context (from LLM):**")
+                            # Highlight the term in the context snippet
+                            _ctx_hl = _ctx.replace(
+                                _sel_text,
+                                f"**:orange[{_sel_text}]**"
+                            )
+                            st.markdown(f"> {_ctx_hl}")
+
+                    with _pcol2:
+                        _png, _pnum, _found = _render_context_preview(
+                            analysis["doc"], _sel_text
+                        )
+                        if _found:
+                            st.caption(f"📄 Page {_pnum} — yellow = matched text")
+                            st.image(_png, use_container_width=True)
+                        else:
+                            st.caption(
+                                "Term not found on a rendered page — "
+                                "may be in an image layer or OCR text only."
                             )
 
             elif analysis["has_text"] and not analysis["escalations"]:
