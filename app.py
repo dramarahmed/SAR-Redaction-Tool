@@ -895,14 +895,49 @@ def _text_to_fitz(text: str, title: str = "") -> fitz.Document:
 
 
 def ingest_file(uploaded_file) -> tuple:
-    """Returns (fitz.Document | None, extracted_text, error_msg)."""
+    """Returns (fitz.Document | None, extracted_text, error_msg, ocr_info).
+
+    ocr_info is a human-readable string describing how text was obtained,
+    e.g. "native PDF text", "Tesseract OCR (TIFF)", "Tesseract OCR (scanned PDF)",
+    "no OCR — Tesseract not available", etc.
+    """
     name = uploaded_file.name
     ext  = name.rsplit(".", 1)[-1].lower()
     data = uploaded_file.read()
     try:
         if ext == "pdf":
-            doc  = fitz.open(stream=data, filetype="pdf")
-            text = "".join(p.get_text() for p in doc)
+            doc      = fitz.open(stream=data, filetype="pdf")
+            text     = "".join(p.get_text() for p in doc)
+            ocr_info = "native PDF text"
+
+            # Scanned / image-only PDF — fall back to Tesseract page by page
+            if not text.strip():
+                if TESSERACT_AVAILABLE:
+                    ocr_parts = []
+                    ocr_errors = []
+                    for page_num, page in enumerate(doc, 1):
+                        try:
+                            pix = page.get_pixmap(dpi=200)
+                            img = PILImage.frombytes(
+                                "RGB", [pix.width, pix.height], pix.samples
+                            )
+                            ocr_parts.append(pytesseract.image_to_string(img))
+                        except Exception as e:
+                            ocr_errors.append(f"p{page_num}: {e}")
+                    text = "\n".join(ocr_parts)
+                    if text.strip():
+                        ocr_info = (
+                            f"Tesseract OCR (scanned PDF, {len(doc)} page(s)"
+                            + (f", {len(ocr_errors)} page error(s)" if ocr_errors else "")
+                            + ")"
+                        )
+                    else:
+                        ocr_info = (
+                            "Tesseract OCR attempted (scanned PDF) — no text extracted"
+                            + (f"; errors: {'; '.join(ocr_errors)}" if ocr_errors else "")
+                        )
+                else:
+                    ocr_info = "scanned PDF — no text layer; Tesseract not available (install it to enable OCR)"
 
         elif ext in ("docx", "doc"):
             if not DOCX_AVAILABLE:
@@ -914,23 +949,28 @@ def ingest_file(uploaded_file) -> tuple:
                     row = " | ".join(c.text.strip() for c in r.cells if c.text.strip())
                     if row:
                         parts.append(row)
-            text = "\n".join(parts)
-            doc  = _text_to_fitz(text, title=name)
+            text     = "\n".join(parts)
+            doc      = _text_to_fitz(text, title=name)
+            ocr_info = "Word document — native text"
 
         elif ext in ("tiff", "tif"):
-            # Open as TIFF then immediately convert to PDF so apply_redactions() works
             _tiff = fitz.open(stream=data, filetype="tiff")
             doc   = fitz.open("pdf", _tiff.convert_to_pdf())
             _tiff.close()
             text = ""
             if TESSERACT_AVAILABLE:
                 try:
-                    img  = PILImage.open(io.BytesIO(data))
-                    text = pytesseract.image_to_string(img)
-                except Exception:
-                    # Tesseract binary not installed or not in PATH —
-                    # include the file in the bundle without OCR text.
-                    pass
+                    img      = PILImage.open(io.BytesIO(data))
+                    text     = pytesseract.image_to_string(img)
+                    ocr_info = (
+                        f"Tesseract OCR (TIFF) — {len(text.split())} words extracted"
+                        if text.strip() else
+                        "Tesseract OCR (TIFF) — no text extracted (blank or unreadable image?)"
+                    )
+                except Exception as e:
+                    ocr_info = f"Tesseract OCR failed: {e}"
+            else:
+                ocr_info = "TIFF — Tesseract not available; no text extracted"
 
         elif ext == "rtf":
             if RTF_AVAILABLE:
@@ -939,18 +979,20 @@ def ingest_file(uploaded_file) -> tuple:
                 raw  = data.decode("utf-8", errors="ignore")
                 text = re.sub(r"\\[a-z]+\d*[ ]?", " ", raw)
                 text = re.sub(r"[{}\\]", "", text).strip()
-            doc = _text_to_fitz(text, title=name)
+            doc      = _text_to_fitz(text, title=name)
+            ocr_info = "RTF — native text"
 
         elif ext == "txt":
-            text = data.decode("utf-8", errors="ignore")
-            doc  = _text_to_fitz(text, title=name)
+            text     = data.decode("utf-8", errors="ignore")
+            doc      = _text_to_fitz(text, title=name)
+            ocr_info = "plain text"
 
         else:
-            return None, "", f"Unsupported format: .{ext}"
+            return None, "", f"Unsupported format: .{ext}", ""
 
-        return doc, text, ""
+        return doc, text, "", ocr_info
     except Exception as exc:
-        return None, "", str(exc)
+        return None, "", str(exc), ""
 
 
 # =============================================================================
@@ -1448,7 +1490,7 @@ if st.session_state.stage == "upload":
 
                 # Ingest
                 status.markdown(f"📥 **Ingesting** `{ufile.name}`…")
-                fitz_doc, text, err = ingest_file(ufile)
+                fitz_doc, text, err, ocr_info = ingest_file(ufile)
 
                 if err or fitz_doc is None:
                     analyses.append({
@@ -1458,6 +1500,7 @@ if st.session_state.stage == "upload":
                         "text":                "",
                         "has_text":            False,
                         "error":               err,
+                        "ocr_info":            ocr_info,
                         "proposed_redactions": [],
                         "escalations":         [],
                         "llm_raw":             "",
@@ -1541,6 +1584,7 @@ if st.session_state.stage == "upload":
                     "text":                text,
                     "has_text":            has_text,
                     "error":               "",
+                    "ocr_info":            ocr_info,
                     "proposed_redactions": proposed,
                     "escalations":         escalations,
                     "llm_raw":             llm_raw,
@@ -1670,6 +1714,19 @@ elif st.session_state.stage == "review":
                                 "requiring redaction in this document."
                             )
                         st.code(llm_raw, language="json")
+
+            # OCR / text extraction status badge
+            _ocr = analysis.get("ocr_info", "")
+            if _ocr:
+                _ocr_lower = _ocr.lower()
+                if "tesseract ocr" in _ocr_lower and "failed" not in _ocr_lower and "no text" not in _ocr_lower and "not available" not in _ocr_lower:
+                    st.success(f"🔎 **Text extraction:** {_ocr}")
+                elif "not available" in _ocr_lower or "failed" in _ocr_lower or "no text extracted" in _ocr_lower:
+                    st.error(f"⚠️ **Text extraction:** {_ocr}")
+                elif "scanned" in _ocr_lower and "not available" not in _ocr_lower:
+                    st.info(f"🔎 **Text extraction:** {_ocr}")
+                else:
+                    st.caption(f"📄 **Text extraction:** {_ocr}")
 
             if not analysis["has_text"]:
                 st.warning(
