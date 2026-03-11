@@ -1,0 +1,1897 @@
+"""
+SAR Redaction Tool
+NHS Subject Access Request · Multi-format document bundle processor
+UK GDPR / DPA 2018 / ICO / BMA / NHS England guidance
+Human-in-the-loop redaction review
+"""
+
+import streamlit as st
+import streamlit.components.v1 as components
+import ollama
+import fitz  # PyMuPDF
+import base64
+import datetime
+import io
+import os
+import re
+import json
+import zipfile
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from pathlib import Path
+
+try:
+    import pandas as pd
+    PANDAS_AVAILABLE = True
+except ImportError:
+    PANDAS_AVAILABLE = False
+
+try:
+    from docx import Document as DocxDocument
+    DOCX_AVAILABLE = True
+except ImportError:
+    DOCX_AVAILABLE = False
+
+try:
+    from striprtf.striprtf import rtf_to_text as parse_rtf
+    RTF_AVAILABLE = True
+except ImportError:
+    RTF_AVAILABLE = False
+
+try:
+    import pytesseract
+    from PIL import Image as PILImage
+    # Confirm the Tesseract binary is actually present before claiming it's available
+    pytesseract.get_tesseract_version()
+    TESSERACT_AVAILABLE = True
+except Exception:
+    TESSERACT_AVAILABLE = False
+
+
+# =============================================================================
+# NHS SAR Redaction Ontology
+# =============================================================================
+
+REDACTION_TAGS = {
+    "THIRD_PARTY_IDENTIFIER": {
+        "label":  "Third-party identifier",
+        "desc":   "Name or identifying detail of a private individual (family, carer, neighbour, friend)",
+        "action": "redact",
+    },
+    "CONFIDENTIAL_DISCLOSURE": {
+        "label":  "Confidential third-party disclosure",
+        "desc":   "Information given in confidence by a third party; anonymous or pseudonymous reports",
+        "action": "redact",
+    },
+    "OTHER_PATIENT_DATA": {
+        "label":  "Other patient's data",
+        "desc":   "Data belonging to a different patient (misfiled notes, clinic list error, wrong results)",
+        "action": "redact",
+    },
+    "AGENCY_CONFIDENTIAL_INFO": {
+        "label":  "Agency / social care report",
+        "desc":   "Social worker, school, police or probation report that identifies a third party",
+        "action": "redact",
+    },
+    "INDIRECT_IDENTIFIER": {
+        "label":  "Indirect identifier",
+        "desc":   "Text that would identify a third party without naming them explicitly",
+        "action": "redact",
+    },
+    "SAFEGUARDING_RISK": {
+        "label":  "Safeguarding concern",
+        "desc":   "Safeguarding referral, MARAC, CP concern, LAC, MASH referral — requires clinical/IG review",
+        "action": "escalate",
+    },
+    "DOMESTIC_ABUSE_CONTEXT": {
+        "label":  "Domestic abuse disclosure",
+        "desc":   "Domestic abuse, coercive control, DASH assessment, MARAC referral — escalate",
+        "action": "escalate",
+    },
+    "CHILD_PROTECTION": {
+        "label":  "Child protection information",
+        "desc":   "CP plan, S47/S17 enquiry, CP conference, LADO — escalate",
+        "action": "escalate",
+    },
+    "SERIOUS_HARM_RISK": {
+        "label":  "Serious harm risk",
+        "desc":   "Suicide/self-harm risk, violence risk, psychotic risk — may be withheld under DPA 2018 s.15",
+        "action": "escalate",
+    },
+    "SENSITIVE_CLINICAL_OPINION": {
+        "label":  "Sensitive clinical opinion",
+        "desc":   "Notes on symptom fabrication, personality disorder traits, dangerous behaviour",
+        "action": "escalate",
+    },
+    "LEGAL_PRIVILEGE": {
+        "label":  "Legal / investigation material",
+        "desc":   "Legal advice, court reports, expert witness reports, internal investigations",
+        "action": "escalate",
+    },
+}
+
+SECTION_ORDER = [
+    "Clinical Records",
+    "Referral Letters",
+    "Correspondence",
+    "Results and Investigations",
+    "Miscellaneous",
+]
+
+
+def _extract_document_date(text: str) -> datetime.date:
+    """
+    Extract the most relevant date from document text using common NHS/UK formats.
+    Searches the first 2 000 characters (where letterhead dates normally appear).
+    Returns datetime.date.min if no plausible date is found (sorts to end of section).
+    """
+    sample = text[:2000]
+
+    _MONTH_MAP = {
+        "jan": 1, "january": 1,
+        "feb": 2, "february": 2,
+        "mar": 3, "march": 3,
+        "apr": 4, "april": 4,
+        "may": 5,
+        "jun": 6, "june": 6,
+        "jul": 7, "july": 7,
+        "aug": 8, "august": 8,
+        "sep": 9, "september": 9,
+        "oct": 10, "october": 10,
+        "nov": 11, "november": 11,
+        "dec": 12, "december": 12,
+    }
+
+    _MIN = datetime.date(1990, 1, 1)
+    _MAX = datetime.date.today()
+    candidates = []
+
+    def _add(y, m, d):
+        try:
+            dt = datetime.date(int(y), int(m), int(d))
+            if _MIN <= dt <= _MAX:
+                candidates.append(dt)
+        except ValueError:
+            pass
+
+    # DD/MM/YYYY  DD-MM-YYYY  DD.MM.YYYY
+    for m in re.finditer(r'\b(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{4})\b', sample):
+        _add(m.group(3), m.group(2), m.group(1))
+
+    # YYYY-MM-DD
+    for m in re.finditer(r'\b(\d{4})-(\d{2})-(\d{2})\b', sample):
+        _add(m.group(1), m.group(2), m.group(3))
+
+    # DD Month YYYY  (e.g. "15 January 2024" or "15 Jan 2024")
+    for m in re.finditer(r'\b(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})\b', sample):
+        mn = _MONTH_MAP.get(m.group(2).lower())
+        if mn:
+            _add(m.group(3), mn, m.group(1))
+
+    return max(candidates) if candidates else datetime.date.min
+
+ACCEPTED_FORMATS = ["pdf", "docx", "doc", "tiff", "tif", "rtf", "txt", "zip"]
+
+
+class _FileWrapper:
+    """Wraps raw bytes + filename to behave like a Streamlit UploadedFile."""
+    def __init__(self, name: str, data: bytes):
+        self.name = name
+        self._data = data
+
+    def read(self) -> bytes:
+        return self._data
+
+
+_SUPPORTED_EXTS = {"pdf", "docx", "doc", "tiff", "tif", "rtf", "txt"}
+
+
+def _expand_zip(name: str, data: bytes) -> list:
+    """Return a list of _FileWrapper for every supported file inside a ZIP."""
+    result = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            for entry in zf.infolist():
+                if entry.is_dir():
+                    continue
+                inner_name = Path(entry.filename).name
+                ext = inner_name.rsplit(".", 1)[-1].lower() if "." in inner_name else ""
+                if ext in _SUPPORTED_EXTS:
+                    result.append(_FileWrapper(inner_name, zf.read(entry.filename)))
+    except Exception as exc:
+        # Return a sentinel so the caller can surface the error
+        result.append(_FileWrapper(f"[ZIP ERROR] {name}", b""))
+        result[-1]._zip_error = str(exc)
+    return result
+
+
+def _collect_all_files(uploaded_files, folder_path: str) -> list:
+    """
+    Combine Streamlit-uploaded files with any files from a folder path.
+    Expands ZIPs from both sources.
+    Returns a flat list of _FileWrapper / UploadedFile objects.
+    """
+    raw = list(uploaded_files or [])
+
+    # Load files from folder
+    if folder_path:
+        fp = Path(folder_path)
+        if fp.is_dir():
+            for f in sorted(fp.iterdir()):
+                if f.is_file():
+                    ext = f.suffix.lower().lstrip(".")
+                    if ext in _SUPPORTED_EXTS or ext == "zip":
+                        raw.append(_FileWrapper(f.name, f.read_bytes()))
+
+    # Expand ZIPs
+    flat = []
+    for uf in raw:
+        name = uf.name
+        if name.lower().endswith(".zip"):
+            data = uf.read()
+            flat.extend(_expand_zip(name, data))
+        else:
+            flat.append(uf)
+
+    return flat
+
+NHS_BLUE = (0.0,  0.478, 0.784)
+WHITE    = (1.0,  1.0,   1.0)
+BLACK    = (0.0,  0.0,   0.0)
+GREY     = (0.45, 0.45,  0.45)
+LT_GREY  = (0.92, 0.92,  0.92)
+
+
+# ── Logo (resized to 60 px tall for the header) ───────────────────────────────
+_LOGO_B64 = ""
+_LOGO_PATH = Path(__file__).parent / "logo.jpg"
+try:
+    if _LOGO_PATH.exists() and TESSERACT_AVAILABLE:   # PIL already imported
+        _img = PILImage.open(_LOGO_PATH)
+        _ratio = 60 / _img.height
+        _img = _img.resize((int(_img.width * _ratio), 60), PILImage.LANCZOS)
+        _buf = io.BytesIO()
+        _img.save(_buf, format="JPEG", quality=85)
+        _LOGO_B64 = "data:image/jpeg;base64," + base64.b64encode(_buf.getvalue()).decode()
+    elif _LOGO_PATH.exists():
+        # PIL available but tesseract flag is False — PIL still imported if Pillow is installed
+        from PIL import Image as _PImg
+        _img = _PImg.open(_LOGO_PATH)
+        _ratio = 60 / _img.height
+        _img = _img.resize((int(_img.width * _ratio), 60), _PImg.LANCZOS)
+        _buf = io.BytesIO()
+        _img.save(_buf, format="JPEG", quality=85)
+        _LOGO_B64 = "data:image/jpeg;base64," + base64.b64encode(_buf.getvalue()).decode()
+except Exception:
+    _LOGO_B64 = ""
+
+
+# ── Glassmorphism CSS ─────────────────────────────────────────────────────────
+def _inject_css():
+    st.markdown("""
+<style>
+/* ═══ Background ═══ */
+.stApp {
+    background: linear-gradient(140deg, #050d1a 0%, #091628 45%, #0c1e3b 75%, #06101f 100%) !important;
+}
+.stApp::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background:
+        radial-gradient(ellipse 55% 40% at 12% 72%, rgba(0,94,184,.18) 0%, transparent 60%),
+        radial-gradient(ellipse 45% 55% at 88% 18%, rgba(0,64,130,.12) 0%, transparent 60%),
+        radial-gradient(ellipse 70% 70% at 50% 50%, rgba(0,20,60,.3) 0%, transparent 70%);
+    pointer-events: none;
+    z-index: 0;
+}
+
+/* ═══ Sidebar ═══ */
+[data-testid="stSidebar"] {
+    background: rgba(4,12,30,.78) !important;
+    backdrop-filter: blur(28px) !important;
+    -webkit-backdrop-filter: blur(28px) !important;
+    border-right: 1px solid rgba(0,94,184,.22) !important;
+    box-shadow: 4px 0 40px rgba(0,0,0,.45) !important;
+}
+[data-testid="stSidebar"] * { color: rgba(210,230,255,.9) !important; }
+[data-testid="stSidebar"] .stMarkdown h1,
+[data-testid="stSidebar"] .stMarkdown h2,
+[data-testid="stSidebar"] .stMarkdown h3 { color: #fff !important; }
+
+/* ═══ Main block ═══ */
+.main .block-container { background: transparent; padding-top: 1rem; }
+
+/* ═══ Headings ═══ */
+h1 { color: #fff !important; font-weight: 700 !important; letter-spacing: -.4px !important; }
+h2, h3 { color: rgba(195,218,255,.95) !important; font-weight: 600 !important; }
+p, li { color: rgba(195,218,255,.85) !important; }
+/* Keep data-editor cells readable — let the Streamlit theme handle them */
+[data-testid="stDataEditor"] td,
+[data-testid="stDataEditor"] th { color: inherit; }
+.stCaption, [data-testid="stCaptionContainer"] p { color: rgba(140,175,220,.72) !important; }
+
+/* ═══ Buttons ═══ */
+.stButton > button {
+    background: rgba(0,94,184,.22) !important;
+    backdrop-filter: blur(8px) !important;
+    border: 1px solid rgba(0,94,184,.45) !important;
+    color: rgba(210,232,255,.95) !important;
+    border-radius: 10px !important;
+    font-weight: 600 !important;
+    letter-spacing: .3px !important;
+    transition: all .22s cubic-bezier(.4,0,.2,1) !important;
+    box-shadow: 0 2px 14px rgba(0,94,184,.14), inset 0 1px 0 rgba(255,255,255,.06) !important;
+}
+.stButton > button:hover {
+    background: rgba(0,94,184,.48) !important;
+    border-color: rgba(0,130,240,.75) !important;
+    box-shadow: 0 4px 22px rgba(0,94,184,.38), 0 0 32px rgba(0,94,184,.14), inset 0 1px 0 rgba(255,255,255,.1) !important;
+    transform: translateY(-1px) !important;
+}
+.stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, rgba(0,94,184,.68) 0%, rgba(0,58,130,.85) 100%) !important;
+    border-color: rgba(0,148,255,.55) !important;
+    box-shadow: 0 4px 26px rgba(0,94,184,.42), inset 0 1px 0 rgba(255,255,255,.12) !important;
+}
+.stButton > button[kind="primary"]:hover {
+    background: linear-gradient(135deg, rgba(0,112,212,.82) 0%, rgba(0,72,160,.95) 100%) !important;
+    box-shadow: 0 6px 32px rgba(0,94,184,.58), 0 0 44px rgba(0,94,184,.18), inset 0 1px 0 rgba(255,255,255,.15) !important;
+}
+.stDownloadButton > button {
+    background: linear-gradient(135deg, rgba(28,155,60,.52) 0%, rgba(18,110,42,.72) 100%) !important;
+    border-color: rgba(50,200,90,.5) !important;
+    box-shadow: 0 4px 22px rgba(28,155,60,.3) !important;
+}
+.stDownloadButton > button:hover {
+    box-shadow: 0 6px 30px rgba(28,155,60,.48) !important;
+}
+
+/* ═══ Metrics ═══ */
+[data-testid="stMetric"] {
+    background: rgba(255,255,255,.05) !important;
+    backdrop-filter: blur(14px) !important;
+    border: 1px solid rgba(255,255,255,.08) !important;
+    border-radius: 14px !important;
+    padding: 18px 22px !important;
+    box-shadow: 0 4px 26px rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.05) !important;
+    transition: border-color .25s ease !important;
+}
+[data-testid="stMetric"]:hover { border-color: rgba(0,94,184,.3) !important; }
+[data-testid="stMetricValue"] { color: #fff !important; font-weight: 700 !important; }
+[data-testid="stMetricLabel"] { color: rgba(140,175,220,.8) !important; }
+
+/* ═══ Expanders ═══ */
+[data-testid="stExpander"] {
+    background: rgba(255,255,255,.04) !important;
+    border: 1px solid rgba(255,255,255,.08) !important;
+    border-radius: 12px !important;
+    backdrop-filter: blur(10px) !important;
+    overflow: hidden;
+    margin-bottom: 8px !important;
+    transition: border-color .2s ease !important;
+}
+[data-testid="stExpander"]:hover { border-color: rgba(0,94,184,.26) !important; }
+[data-testid="stExpanderHeader"] { color: rgba(195,218,255,.9) !important; font-weight: 500 !important; }
+[data-testid="stExpanderDetails"] {
+    background: rgba(0,0,0,.14) !important;
+    border-top: 1px solid rgba(255,255,255,.06) !important;
+}
+
+/* ═══ Inputs — global ═══ */
+.stTextInput > div > div > input,
+.stDateInput > div > div > input {
+    background: rgba(255,255,255,.07) !important;
+    border: 1px solid rgba(255,255,255,.13) !important;
+    border-radius: 8px !important;
+    color: rgba(210,232,255,.95) !important;
+}
+.stTextInput > div > div > input:focus { border-color: rgba(0,94,184,.6) !important; box-shadow: 0 0 0 2px rgba(0,94,184,.18) !important; }
+.stSelectbox [data-baseweb="select"] { background: rgba(255,255,255,.06) !important; }
+
+/* ═══ Inputs — sidebar: solid dark bg so light text is readable ═══ */
+/* Catch every input/container variant Streamlit might render */
+[data-testid="stSidebar"] input,
+[data-testid="stSidebar"] [data-baseweb="input"],
+[data-testid="stSidebar"] [data-baseweb="input"] input,
+[data-testid="stSidebar"] [data-baseweb="base-input"],
+[data-testid="stSidebar"] [data-baseweb="base-input"] input,
+[data-testid="stSidebar"] .stTextInput > div > div > input,
+[data-testid="stSidebar"] .stDateInput > div > div > input,
+[data-testid="stSidebar"] .stDateInput input {
+    background: rgba(6, 18, 48, 0.92) !important;
+    background-color: rgba(6, 18, 48, 0.92) !important;
+    border: 1px solid rgba(0,94,184,.38) !important;
+    border-radius: 8px !important;
+    color: rgba(210,232,255,.95) !important;
+    -webkit-text-fill-color: rgba(210,232,255,.95) !important;
+}
+[data-testid="stSidebar"] input::placeholder,
+[data-testid="stSidebar"] [data-baseweb="input"] input::placeholder {
+    color: rgba(140,175,220,.45) !important;
+    -webkit-text-fill-color: rgba(140,175,220,.45) !important;
+}
+[data-testid="stSidebar"] input:focus,
+[data-testid="stSidebar"] [data-baseweb="input"]:focus-within {
+    border-color: rgba(0,130,240,.65) !important;
+    box-shadow: 0 0 0 2px rgba(0,94,184,.22) !important;
+}
+/* Selectbox containers */
+[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"],
+[data-testid="stSidebar"] .stSelectbox > div > div {
+    background: rgba(6, 18, 48, 0.92) !important;
+    border: 1px solid rgba(0,94,184,.38) !important;
+    border-radius: 8px !important;
+    color: rgba(210,232,255,.95) !important;
+}
+/* Selectbox dropdown option text */
+[data-testid="stSidebar"] [data-baseweb="select"] [data-baseweb="option"] {
+    background: rgba(6, 18, 48, 0.95) !important;
+    color: rgba(210,232,255,.9) !important;
+}
+
+/* ═══ Alert boxes ═══ */
+[data-testid="stAlert"] {
+    background: rgba(255,255,255,.04) !important;
+    backdrop-filter: blur(10px) !important;
+    border-radius: 10px !important;
+}
+
+/* ═══ Progress bar ═══ */
+[data-testid="stProgressBar"] > div > div {
+    background: linear-gradient(90deg, #005EB8, #00a3e0, #005EB8) !important;
+    background-size: 200% 100% !important;
+    animation: sar-shimmer 1.8s linear infinite !important;
+    border-radius: 4px !important;
+    box-shadow: 0 0 12px rgba(0,94,184,.55) !important;
+}
+@keyframes sar-shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+
+/* ═══ Data editor / tables ═══ */
+[data-testid="stDataEditor"], [data-testid="stDataFrame"] {
+    background: rgba(255,255,255,.03) !important;
+    border: 1px solid rgba(255,255,255,.08) !important;
+    border-radius: 10px !important;
+    overflow: hidden !important;
+}
+
+/* ═══ Code blocks ═══ */
+.stCode, code, pre {
+    background: rgba(0,0,0,.32) !important;
+    border: 1px solid rgba(255,255,255,.08) !important;
+    border-radius: 8px !important;
+    color: rgba(160,205,255,.9) !important;
+}
+
+/* ═══ Containers with border ═══ */
+[data-testid="stVerticalBlockBorderWrapper"] {
+    background: rgba(255,255,255,.04) !important;
+    border-color: rgba(255,255,255,.1) !important;
+    border-radius: 12px !important;
+    backdrop-filter: blur(8px) !important;
+}
+
+/* ═══ Divider ═══ */
+hr { border-color: rgba(255,255,255,.08) !important; }
+
+/* ═══ Scrollbar ═══ */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: rgba(255,255,255,.02); }
+::-webkit-scrollbar-thumb { background: rgba(0,94,184,.38); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(0,94,184,.6); }
+
+/* ═══ Toggle ═══ */
+.stToggle > label > div { background: rgba(255,255,255,.1) !important; }
+
+/* ═══ Header card ═══ */
+.sar-header {
+    display: flex; align-items: center; gap: 18px;
+    padding: 18px 24px;
+    background: rgba(0,94,184,.12);
+    backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px);
+    border: 1px solid rgba(0,94,184,.22);
+    border-radius: 16px; margin-bottom: 20px;
+    box-shadow: 0 8px 32px rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.06);
+}
+.sar-header img { height: 54px; width: auto; border-radius: 8px; }
+.sar-header-text { flex: 1; }
+.sar-header-text h1 { margin: 0 !important; font-size: 1.55rem !important; font-weight: 700 !important; color: #fff !important; line-height: 1.2 !important; }
+.sar-header-text p  { margin: 5px 0 0; font-size: .82rem; color: rgba(140,180,230,.78); }
+
+/* ═══ Badges ═══ */
+.badge-local {
+    display: inline-flex; align-items: center; gap: 5px;
+    background: rgba(28,155,60,.16); border: 1px solid rgba(50,200,90,.38);
+    border-radius: 20px; padding: 3px 11px;
+    font-size: .72rem; color: rgba(90,220,120,.9); font-weight: 600; letter-spacing: .3px;
+}
+.badge-test {
+    display: inline-flex; align-items: center; gap: 5px;
+    background: rgba(255,160,0,.12); border: 1px solid rgba(255,160,0,.35);
+    border-radius: 20px; padding: 3px 11px;
+    font-size: .72rem; color: rgba(255,195,80,.9); font-weight: 600; letter-spacing: .3px;
+}
+
+/* ═══ Disclaimer ═══ */
+.sar-disclaimer {
+    background: rgba(255,140,0,.07);
+    border: 1px solid rgba(255,140,0,.22);
+    border-radius: 10px; padding: 10px 14px; margin: 10px 0;
+    font-size: .76rem; color: rgba(255,195,100,.82); line-height: 1.55;
+}
+</style>""", unsafe_allow_html=True)
+
+
+# ── Sound effects (Web Audio API via components.html) ────────────────────────
+def _play_sound(sound: str):
+    """Inject a zero-height iframe that plays a Web Audio tone sequence."""
+    _SOUNDS = {
+        "chime": "[[523,.0,.18],[659,.16,.18],[784,.32,.35]]",     # C5-E5-G5
+        "fanfare": "[[523,.0,.15],[659,.14,.15],[784,.28,.15],[1047,.42,.45]]",  # C5-E5-G5-C6
+        "click": "[[880,.0,.06]]",
+    }
+    notes = _SOUNDS.get(sound, _SOUNDS["chime"])
+    components.html(f"""
+<script>
+(function(){{
+  try {{
+    var ctx = new (window.AudioContext||window.webkitAudioContext)();
+    var notes = {notes};
+    notes.forEach(function(n){{
+      var o=ctx.createOscillator(), g=ctx.createGain();
+      o.connect(g); g.connect(ctx.destination);
+      o.frequency.value=n[0]; o.type='sine';
+      g.gain.setValueAtTime(0, ctx.currentTime+n[1]);
+      g.gain.linearRampToValueAtTime(0.18, ctx.currentTime+n[1]+0.04);
+      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+n[1]+n[2]);
+      o.start(ctx.currentTime+n[1]); o.stop(ctx.currentTime+n[1]+n[2]+0.05);
+    }});
+  }} catch(e) {{}}
+}})();
+</script>""", height=0)
+
+
+# =============================================================================
+# JSON extraction — robust, handles code fences, preamble, minor errors
+# =============================================================================
+
+def _extract_json(raw: str):
+    if not raw:
+        return None
+
+    # Strategy 1: JSON inside a ```json ... ``` fence (greedy to capture full nested object)
+    m = re.search(r"```(?:json)?\s*(\{.*\})\s*```", raw, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    # Strategy 2: first { ... last }
+    if "{" in raw and "}" in raw:
+        start = raw.index("{")
+        end   = raw.rindex("}") + 1
+        candidate = raw[start:end]
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            # Strategy 3: auto-fix common LLM JSON mistakes then retry
+            fixed = candidate
+            fixed = re.sub(r",\s*([}\]])",    r"\1",      fixed)  # trailing commas
+            fixed = re.sub(r'(?<!")None(?!")',  '"null"',  fixed)  # Python None
+            fixed = re.sub(r'(?<!")True(?!")',  '"true"',  fixed)  # Python True
+            fixed = re.sub(r'(?<!")False(?!")', '"false"', fixed)  # Python False
+            try:
+                return json.loads(fixed)
+            except json.JSONDecodeError:
+                pass
+
+    return None
+
+
+# =============================================================================
+# Ollama helpers
+# =============================================================================
+
+# Models tried in order when sorting the sidebar dropdown.
+# Add or change entries to suit the hardware on each deployment.
+PREFERRED_MODELS = [
+    "qwen2.5:14b",
+    "qwen3.5:9b",
+    "qwen2.5:7b",
+    "qwen2.5:32b",
+    "qwen2.5",
+    "llama3.1:8b",
+    "llama3.1",
+    "llama3",
+]
+
+
+def _rank_model(name: str) -> int:
+    for i, pref in enumerate(PREFERRED_MODELS):
+        if name.startswith(pref):
+            return i
+    return len(PREFERRED_MODELS)
+
+
+def check_ollama_connection():
+    try:
+        resp   = ollama.list()
+        models = resp.models if hasattr(resp, "models") else []
+        names  = []
+        for m in models:
+            if hasattr(m, "model"):   names.append(m.model)
+            elif isinstance(m, dict): names.append(m.get("name", m.get("model", "")))
+        names = sorted([n for n in names if n], key=_rank_model)
+        return True, names
+    except Exception:
+        return False, []
+
+
+_SAR_SYSTEM = (
+    "You are an NHS Information Governance SAR redaction specialist. "
+    "You respond with valid JSON only. No preamble, no explanation, no markdown."
+)
+
+_SAR_PROMPT_TMPL = """\
+You are an NHS Information Governance officer processing a Subject Access Request (SAR).
+Analyse ONLY the text between the --- markers below.
+Identify everything that must be redacted under UK GDPR / DPA 2018 / ICO guidance.
+Be thorough — clinical records routinely contain third-party names that must be redacted.
+
+DO NOT FLAG FOR REDACTION:
+{patient_line}\
+- The patient's own name, DOB, NHS number, address — this is their own personal data
+- Clinician names (GP, nurse, consultant, pharmacist) acting in a professional role
+- NHS Trust, hospital, GP practice, clinic or department names
+- The patient's own clinical findings, diagnoses, medications, test results
+- Standard appointment or administrative text
+
+PROPOSE FOR REDACTION — copy the exact tag name into the "tag" field:
+THIRD_PARTY_IDENTIFIER   — full or partial name of any family member, partner, carer, neighbour, friend, employer, teacher, school contact
+CONFIDENTIAL_DISCLOSURE  — information given in confidence or anonymously by a third party
+OTHER_PATIENT_DATA       — data clearly belonging to a different patient (misfiled notes, wrong results)
+AGENCY_CONFIDENTIAL_INFO — social worker, school, police or probation report that names a third party
+INDIRECT_IDENTIFIER      — text that would identify a third party without naming them (e.g. "your son at St Peter's Primary")
+
+ESCALATE for human review — do NOT auto-redact — copy the exact tag name:
+SAFEGUARDING_RISK          — safeguarding referrals, MARAC, CP concerns, MASH referrals
+DOMESTIC_ABUSE_CONTEXT     — domestic abuse, coercive control, DASH assessment
+CHILD_PROTECTION           — CP plans, Section 47/17, CP conferences, LADO
+SERIOUS_HARM_RISK          — suicide/self-harm risk, violence risk, psychotic risk
+SENSITIVE_CLINICAL_OPINION — fabrication concerns, personality disorder notes, dangerous behaviour
+LEGAL_PRIVILEGE            — legal advice, court reports, internal investigation material
+
+Rules for the "text" field:
+- Copy the text EXACTLY as it appears in the document, character for character
+- Include only the minimum span needed (a name, a phrase — not a whole sentence)
+- Never include the patient's own name
+
+Output this JSON object and nothing else:
+{{
+  "proposed_redactions": [
+    {{
+      "text": "exact verbatim text from the document",
+      "tag": "THIRD_PARTY_IDENTIFIER",
+      "reason": "Brief explanation",
+      "replacement": "[REDACTED - third-party personal data]",
+      "context": "Up to 30 words of surrounding context"
+    }}
+  ],
+  "escalations": [
+    {{
+      "text": "exact verbatim text",
+      "tag": "SAFEGUARDING_RISK",
+      "reason": "Brief explanation",
+      "context": "Up to 30 words of surrounding context"
+    }}
+  ]
+}}
+
+If nothing in this excerpt needs redaction or escalation return:
+{{"proposed_redactions": [], "escalations": []}}
+
+Document excerpt:
+---
+{chunk}
+---"""
+
+
+_CHUNK_TIMEOUT = 120   # seconds to wait for a single LLM chunk response
+
+
+def _analyse_chunk(chunk: str, model: str, patient_line: str, extra_instructions: str = "") -> tuple:
+    """Send one chunk to the LLM. Returns (result_dict, raw_string)."""
+    user_msg = _SAR_PROMPT_TMPL.format(patient_line=patient_line, chunk=chunk)
+    if extra_instructions:
+        user_msg += f"\n\nADDITIONAL INSTRUCTIONS FOR THIS SESSION ONLY:\n{extra_instructions}"
+
+    def _call():
+        return ollama.chat(
+            model=model,
+            messages=[
+                {"role": "system", "content": _SAR_SYSTEM},
+                {"role": "user",   "content": user_msg},
+            ],
+            format="json",                              # forces valid JSON output for any model
+            options={"temperature": 0.05,
+                     "num_predict": 1024},              # cap output — SAR JSON rarely exceeds ~800 tokens
+        )
+
+    try:
+        ex     = ThreadPoolExecutor(max_workers=1)
+        future = ex.submit(_call)
+        try:
+            resp = future.result(timeout=_CHUNK_TIMEOUT)
+        except FuturesTimeoutError:
+            ex.shutdown(wait=False)   # don't block — let the stalled thread die on its own
+            return (
+                {"proposed_redactions": [], "escalations": [], "parse_ok": False},
+                f"[TIMEOUT] LLM did not respond within {_CHUNK_TIMEOUT}s",
+            )
+        finally:
+            ex.shutdown(wait=False)
+        raw = resp["message"]["content"].strip()
+    except Exception as exc:
+        return {"proposed_redactions": [], "escalations": [], "parse_ok": False}, f"[LLM ERROR] {exc}"
+
+    parsed = _extract_json(raw)
+    if parsed is None:
+        return {"proposed_redactions": [], "escalations": [], "parse_ok": False}, raw
+
+    return {
+        "proposed_redactions": parsed.get("proposed_redactions", []) or [],
+        "escalations":         parsed.get("escalations", [])         or [],
+        "parse_ok":            True,
+    }, raw
+
+
+def llm_analyse_document(
+    text: str,
+    model: str,
+    patient_name: str = "",
+    status_cb=None,
+    extra_redactions: str = "",
+    custom_instructions: str = "",
+) -> tuple:
+    """
+    Analyse document text for SAR redactions.
+    Splits long documents into overlapping chunks so the whole document is covered.
+    Returns (result_dict, raw_llm_string).
+
+    status_cb:           optional callable(message: str) for live progress updates.
+    extra_redactions:    newline/comma-separated extra terms to always redact this session.
+    custom_instructions: free-text extra prompt instructions appended this session.
+    """
+    patient_line = ""
+    if patient_name.strip():
+        patient_line = (
+            f"- The patient is {patient_name.strip()} — "
+            "NEVER flag this person's own name or identifiers for redaction\n"
+        )
+
+    # Build session-specific addendum
+    extra_parts = []
+    if extra_redactions.strip():
+        terms = [t.strip() for t in re.split(r"[,\n]+", extra_redactions) if t.strip()]
+        if terms:
+            quoted = ", ".join(f'"{t}"' for t in terms)
+            extra_parts.append(
+                f"EXTRA TERMS TO REDACT (always flag these regardless of other rules): {quoted}\n"
+                "Tag each as THIRD_PARTY_IDENTIFIER unless a more specific tag clearly applies."
+            )
+    if custom_instructions.strip():
+        extra_parts.append(custom_instructions.strip())
+    extra_str = "\n\n".join(extra_parts)
+
+    CHUNK      = 6000   # characters per chunk (~1500 words, ~2-3 GP pages)
+    STRIDE     = 5500   # overlap of 500 chars catches phrases that straddle a boundary
+    MAX_CHUNKS = 8      # analyse up to ~48 000 chars (≈ 12–15 pages)
+
+    chunks = []
+    pos = 0
+    while pos < len(text) and len(chunks) < MAX_CHUNKS:
+        chunks.append(text[pos: pos + CHUNK])
+        pos += STRIDE
+
+    all_proposed, all_escalations, all_raw = [], [], []
+    parse_ok = True
+
+    for idx, chunk in enumerate(chunks, 1):
+        if status_cb:
+            status_cb(
+                f"🤖 Analysing chunk {idx}/{len(chunks)} "
+                f"(~{len(chunk):,} chars, up to {_CHUNK_TIMEOUT}s each)…"
+            )
+        result, raw = _analyse_chunk(chunk, model, patient_line, extra_str)
+        all_raw.append(raw)
+        if not result.get("parse_ok"):
+            parse_ok = False
+        all_proposed.extend(result.get("proposed_redactions", []))
+        all_escalations.extend(result.get("escalations", []))
+
+    return {
+        "proposed_redactions": all_proposed,
+        "escalations":         all_escalations,
+        "parse_ok":            parse_ok,
+        "chunks_analysed":     len(chunks),
+        "chars_total":         len(text),
+    }, f"\n\n--- CHUNK BREAK ---\n\n".join(all_raw)
+
+
+def classify_document(text: str, model: str) -> str:
+    if not text.strip():
+        return "Miscellaneous"
+    cats   = "\n".join(f"- {c}" for c in SECTION_ORDER)
+    prompt = (
+        f"Classify this NHS GP medical document into exactly ONE of these five categories:\n{cats}\n\n"
+        "Definitions:\n"
+        "- Clinical Records: GP consultation notes, clinical entries, SOAP notes, problem lists, "
+        "medication reviews, health checks, nurse or GP encounter records, summarised care records\n"
+        "- Referral Letters: Letters written BY the GP surgery and sent TO another provider or "
+        "specialist — outgoing referrals, GP covering letters sent on behalf of the patient\n"
+        "- Correspondence: Documents RECEIVED by the GP surgery FROM external providers — "
+        "hospital discharge summaries, specialist clinic letters, letters from consultants, "
+        "social care letters, letters from other agencies (exclude results/test reports)\n"
+        "- Results and Investigations: Pathology results, blood tests, imaging reports (X-ray, "
+        "MRI, CT, ultrasound), ECG reports, microbiology, histology, any other investigation report\n"
+        "- Miscellaneous: Anything that does not clearly fit the above four categories\n\n"
+        f"Document excerpt:\n---\n{text[:2000]}\n---\n\n"
+        "Reply with ONLY the category name from the list, exactly as written."
+    )
+    try:
+        ex     = ThreadPoolExecutor(max_workers=1)
+        future = ex.submit(
+            ollama.chat,
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0, "num_predict": 32},
+        )
+        try:
+            resp = future.result(timeout=30)
+        except FuturesTimeoutError:
+            ex.shutdown(wait=False)
+            return "Miscellaneous"
+        finally:
+            ex.shutdown(wait=False)
+        result = resp["message"]["content"].strip()
+        for cat in SECTION_ORDER:
+            if cat.lower() in result.lower():
+                return cat
+    except Exception:
+        pass
+    return "Miscellaneous"
+
+
+# =============================================================================
+# File ingest  ->  fitz.Document + extracted text
+# =============================================================================
+
+def _text_to_fitz(text: str, title: str = "") -> fitz.Document:
+    doc = fitz.open()
+    PAGE_W, PAGE_H = 595, 842
+    MX, MY         = 50, 60
+    LH, FS, CPL    = 13, 9, 105
+    MAX_L          = int((PAGE_H - MY * 2) / LH)
+
+    raw_lines = ([title, "─" * 70, ""] if title else []) + text.splitlines()
+    lines = []
+    for ln in raw_lines:
+        while len(ln) > CPL:
+            lines.append(ln[:CPL])
+            ln = ln[CPL:]
+        lines.append(ln)
+
+    page, lnum = None, 0
+    for line in lines:
+        if page is None or lnum >= MAX_L:
+            page = doc.new_page(width=PAGE_W, height=PAGE_H)
+            lnum = 0
+        page.insert_text((MX, MY + lnum * LH), line, fontsize=FS, fontname="cour")
+        lnum += 1
+
+    if len(doc) == 0:
+        doc.new_page(width=PAGE_W, height=PAGE_H)
+    return doc
+
+
+def ingest_file(uploaded_file) -> tuple:
+    """Returns (fitz.Document | None, extracted_text, error_msg)."""
+    name = uploaded_file.name
+    ext  = name.rsplit(".", 1)[-1].lower()
+    data = uploaded_file.read()
+    try:
+        if ext == "pdf":
+            doc  = fitz.open(stream=data, filetype="pdf")
+            text = "".join(p.get_text() for p in doc)
+
+        elif ext in ("docx", "doc"):
+            if not DOCX_AVAILABLE:
+                raise RuntimeError("python-docx not installed — cannot open Word files")
+            d     = DocxDocument(io.BytesIO(data))
+            parts = [p.text for p in d.paragraphs if p.text.strip()]
+            for t in d.tables:
+                for r in t.rows:
+                    row = " | ".join(c.text.strip() for c in r.cells if c.text.strip())
+                    if row:
+                        parts.append(row)
+            text = "\n".join(parts)
+            doc  = _text_to_fitz(text, title=name)
+
+        elif ext in ("tiff", "tif"):
+            # Open as TIFF then immediately convert to PDF so apply_redactions() works
+            _tiff = fitz.open(stream=data, filetype="tiff")
+            doc   = fitz.open("pdf", _tiff.convert_to_pdf())
+            _tiff.close()
+            text = ""
+            if TESSERACT_AVAILABLE:
+                try:
+                    img  = PILImage.open(io.BytesIO(data))
+                    text = pytesseract.image_to_string(img)
+                except Exception:
+                    # Tesseract binary not installed or not in PATH —
+                    # include the file in the bundle without OCR text.
+                    pass
+
+        elif ext == "rtf":
+            if RTF_AVAILABLE:
+                text = parse_rtf(data.decode("utf-8", errors="ignore"))
+            else:
+                raw  = data.decode("utf-8", errors="ignore")
+                text = re.sub(r"\\[a-z]+\d*[ ]?", " ", raw)
+                text = re.sub(r"[{}\\]", "", text).strip()
+            doc = _text_to_fitz(text, title=name)
+
+        elif ext == "txt":
+            text = data.decode("utf-8", errors="ignore")
+            doc  = _text_to_fitz(text, title=name)
+
+        else:
+            return None, "", f"Unsupported format: .{ext}"
+
+        return doc, text, ""
+    except Exception as exc:
+        return None, "", str(exc)
+
+
+# =============================================================================
+# Apply approved redactions
+# =============================================================================
+
+def _find_text_on_page(page, needle: str) -> list:
+    """
+    Case-insensitive, whitespace-tolerant text search.
+    Handles line-breaks that split words across PDF lines.
+    Returns list of Rect.
+    """
+    needle = " ".join(needle.split())   # normalise all whitespace to single spaces
+    if not needle:
+        return []
+
+    # 1. Exact match
+    rects = page.search_for(needle)
+    if rects:
+        return rects
+
+    # 2. Common case variants
+    for variant in (needle.lower(), needle.upper(), needle.title()):
+        if variant != needle:
+            rects = page.search_for(variant)
+            if rects:
+                return rects
+
+    # 3. Case-insensitive via raw page text (handles different casing)
+    page_text = page.get_text("text")
+    pos = page_text.lower().find(needle.lower())
+    if pos != -1:
+        actual = page_text[pos: pos + len(needle)]
+        rects = page.search_for(actual)
+        if rects:
+            return rects
+
+    # 4. Whitespace-normalised: collapse all whitespace in page text too.
+    #    Catches cases where a line-break sits between two words of the needle.
+    page_flat = " ".join(page_text.split())
+    pos = page_flat.lower().find(needle.lower())
+    if pos != -1:
+        actual_flat = page_flat[pos: pos + len(needle)]
+        rects = page.search_for(actual_flat)
+        if rects:
+            return rects
+        # Try case variants of the flat version
+        for variant in (actual_flat.lower(), actual_flat.upper(), actual_flat.title()):
+            rects = page.search_for(variant)
+            if rects:
+                return rects
+
+    return []
+
+
+def apply_approved_redactions(doc: fitz.Document, approved_items: list) -> tuple:
+    """Black-box all approved strings. Returns (modified_doc, redaction_count)."""
+    # apply_redactions() requires a PDF; convert if necessary (e.g. TIFF opened directly)
+    if not doc.is_pdf:
+        doc = fitz.open("pdf", doc.convert_to_pdf())
+    count  = 0
+    unique = {}
+    for item in approved_items:
+        t = (item.get("text") or "").strip()
+        if t and len(t) >= 2:
+            unique[t] = item.get("replacement", "[REDACTED]")
+
+    for page in doc:
+        for s, replacement in unique.items():
+            for rect in _find_text_on_page(page, s):
+                try:
+                    page.add_redact_annot(
+                        rect,
+                        text=replacement,
+                        fontname="helv",
+                        fontsize=5,
+                        fill=(0.85, 0.85, 0.85),
+                    )
+                except Exception:
+                    page.add_redact_annot(rect, fill=(0, 0, 0))
+                count += 1
+        page.apply_redactions()
+
+    return doc, count
+
+
+# =============================================================================
+# Bundle assembly — cover page + section dividers + documents
+# =============================================================================
+
+def _cover_page(sar_ref, operator, date_str, total_docs) -> fitz.Document:
+    doc  = fitz.open()
+    page = doc.new_page(width=595, height=842)
+
+    page.draw_rect(fitz.Rect(0, 0, 595, 150), color=NHS_BLUE, fill=NHS_BLUE)
+    page.insert_text((40, 75),  "NHS",                      fontsize=40, color=WHITE, fontname="helv")
+    page.insert_text((40, 108), "Subject Access Request",   fontsize=17, color=WHITE, fontname="helv")
+    page.insert_text((40, 133), "REDACTED DOCUMENT BUNDLE", fontsize=13, color=WHITE, fontname="helv")
+
+    def row(lbl, val, y):
+        page.insert_text((40,  y), lbl,        fontsize=11, color=GREY,  fontname="helv")
+        page.insert_text((210, y), val or "—", fontsize=11, color=BLACK, fontname="helv")
+        return y + 26
+
+    y = 210
+    y = row("SAR Reference / Subject:", sar_ref,         y)
+    y = row("Processed by:",            operator,        y)
+    y = row("Date processed:",          date_str,        y)
+    y = row("Total documents:",         str(total_docs), y)
+
+    page.draw_line((40, y + 10), (555, y + 10), color=LT_GREY, width=1)
+
+    notice = (
+        "Processed under UK GDPR / DPA 2018 / ICO SAR guidance. "
+        "Third-party and safeguarding information has been reviewed by the named operator. "
+        "All redaction decisions have been individually approved before this bundle was produced."
+    )
+    yn = y + 30
+    for chunk in [notice[i:i + 90] for i in range(0, len(notice), 90)]:
+        page.insert_text((40, yn), chunk, fontsize=9, color=GREY, fontname="helv")
+        yn += 14
+
+    page.draw_rect(fitz.Rect(0, 830, 595, 842), color=NHS_BLUE, fill=NHS_BLUE)
+    page.insert_text((40, 839), "CONFIDENTIAL — FOR AUTHORISED VIEWING ONLY",
+                     fontsize=8, color=WHITE, fontname="helv")
+    return doc
+
+
+def _divider_page(section, count, idx, total, date_range="") -> fitz.Document:
+    doc  = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.draw_rect(fitz.Rect(0, 0, 12, 842), color=NHS_BLUE, fill=NHS_BLUE)
+    page.insert_text((30, 60),  f"SECTION {idx} OF {total}",
+                     fontsize=9,  color=GREY,  fontname="helv")
+    page.insert_text((30, 400), section,
+                     fontsize=30, color=BLACK, fontname="helv")
+    subtitle = f"{count} document{'s' if count != 1 else ''}"
+    if date_range:
+        subtitle += f"  ·  {date_range}"
+    page.insert_text((30, 435), subtitle,
+                     fontsize=13, color=GREY,  fontname="helv")
+    page.insert_text((30, 455), "Ordered most recent first",
+                     fontsize=9,  color=GREY,  fontname="helv")
+    page.draw_rect(fitz.Rect(0, 830, 595, 842), color=LT_GREY, fill=LT_GREY)
+    return doc
+
+
+def build_bundle(proc_docs, sar_ref="", operator="", date_str="") -> fitz.Document:
+    groups = {}
+    for item in proc_docs:
+        groups.setdefault(item["section"], []).append(item)
+
+    # Sort each section: most recent document first; undated docs go to the end
+    for sec in groups:
+        groups[sec].sort(
+            key=lambda x: x.get("doc_date", datetime.date.min),
+            reverse=True,
+        )
+
+    ordered = [(s, groups[s]) for s in SECTION_ORDER if s in groups]
+    out     = fitz.open()
+    out.insert_pdf(_cover_page(sar_ref, operator, date_str, len(proc_docs)))
+    for idx, (sec, docs) in enumerate(ordered, 1):
+        # Build a date-range subtitle for the divider (e.g. "Jan 2019 – Mar 2024")
+        real_dates = [
+            d["doc_date"] for d in docs
+            if d.get("doc_date") and d["doc_date"] != datetime.date.min
+        ]
+        if real_dates:
+            oldest  = min(real_dates).strftime("%b %Y")
+            newest  = max(real_dates).strftime("%b %Y")
+            date_range = newest if oldest == newest else f"{oldest} – {newest}"
+        else:
+            date_range = ""
+        out.insert_pdf(_divider_page(sec, len(docs), idx, len(ordered), date_range))
+        for item in docs:
+            out.insert_pdf(item["doc"])
+    return out
+
+
+# =============================================================================
+# Session state
+# =============================================================================
+
+for _k, _v in [
+    ("stage",        "upload"),
+    ("analyses",     []),
+    ("bundle_bytes", None),
+    ("bundle_fname", "SAR_REDACTED_BUNDLE.pdf"),
+    ("proc_summary", []),
+    ("play_sound",   None),
+]:
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
+
+
+def _reset():
+    keys_to_clear = [
+        k for k in list(st.session_state.keys())
+        if k in ("stage", "analyses", "bundle_bytes", "bundle_fname", "proc_summary")
+        or k.startswith("editor_")
+        or k.startswith("sec_")
+        or k.startswith("esc_add_")
+        or k.startswith("app_all_")
+        or k.startswith("rej_all_")
+    ]
+    for k in keys_to_clear:
+        del st.session_state[k]
+
+
+# =============================================================================
+# Page config
+# =============================================================================
+
+st.set_page_config(
+    page_title="SAR Redaction Tool",
+    page_icon="🔒",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+_inject_css()
+
+# Consume pending sound (set before st.rerun() on stage transitions)
+if st.session_state.get("play_sound"):
+    _play_sound(st.session_state.play_sound)
+    st.session_state.play_sound = None
+
+
+# =============================================================================
+# Sidebar — always visible
+# =============================================================================
+
+with st.sidebar:
+    # Logo + title
+    if _LOGO_B64:
+        st.markdown(
+            f'<div style="text-align:center;padding:12px 0 6px">'
+            f'<img src="{_LOGO_B64}" style="max-height:64px;max-width:100%;border-radius:8px;'
+            f'box-shadow:0 4px 16px rgba(0,94,184,.3)"></div>',
+            unsafe_allow_html=True,
+        )
+    st.markdown(
+        '<div style="text-align:center;font-size:1.1rem;font-weight:700;'
+        'color:#fff;margin:6px 0 2px">SAR Redaction Tool</div>'
+        '<div style="text-align:center;font-size:.72rem;color:rgba(140,180,220,.7);margin-bottom:8px">'
+        'NHS Subject Access Request</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Badges
+    st.markdown(
+        '<div style="display:flex;gap:6px;justify-content:center;margin-bottom:10px;flex-wrap:wrap">'
+        '<span class="badge-local">🔒 100% Local — No data leaves this PC</span>'
+        '<span class="badge-test">⚠ Beta</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.divider()
+
+    # Stage indicator
+    _stage_labels = {
+        "upload": "① Upload & Analyse",
+        "review": "② Review & Approve",
+        "export": "③ Export",
+    }
+    _stage_colours = {"upload": "#4a9eff", "review": "#f0a030", "export": "#3cb86a"}
+    _sc = _stage_colours.get(st.session_state.stage, "#888")
+    st.markdown(
+        f'<div style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);'
+        f'border-radius:8px;padding:8px 12px;font-size:.82rem;font-weight:600;'
+        f'color:{_sc}">▶ {_stage_labels.get(st.session_state.stage, "")}</div>',
+        unsafe_allow_html=True,
+    )
+    st.divider()
+
+    # Ollama connection
+    connected, available_models = check_ollama_connection()
+    if connected and available_models:
+        st.success(f"Ollama ✓ — {len(available_models)} model(s) available")
+        selected_model = st.selectbox("LLM Model", available_models)
+    elif connected:
+        st.warning("Ollama running — no models loaded")
+        selected_model = st.text_input("Model name", value="llama3")
+    else:
+        st.error("Ollama not running — start via run.bat")
+        selected_model = st.text_input("Model name", value="llama3")
+
+    st.divider()
+    st.subheader("Settings")
+    auto_classify = True   # always on
+    show_debug = st.toggle(
+        "Show LLM debug output",
+        value=False,
+        help="Show the raw LLM response for each document. Useful when no redactions appear.",
+    )
+
+    st.divider()
+    st.subheader("SAR Details")
+    sar_ref       = st.text_input("SAR reference / case ID",  placeholder="e.g. SAR-2024-001")
+    patient_name  = st.text_input("Patient full name",         placeholder="e.g. John Smith")
+    operator_name = st.text_input("Operator name",             placeholder="Your name / initials")
+    sar_date_input = st.date_input("SAR received date", value=None, format="DD/MM/YYYY")
+    if sar_date_input:
+        _deadline  = sar_date_input + datetime.timedelta(days=30)
+        _days_left = (_deadline - datetime.date.today()).days
+        _colour    = "green" if _days_left > 10 else ("orange" if _days_left > 3 else "red")
+        st.markdown(
+            f"Deadline: **{_deadline.strftime('%d/%m/%Y')}**  \n"
+            f":{_colour}[{_days_left} days remaining]"
+        )
+
+    st.divider()
+    with st.expander("⚙ Custom redaction (this session only)", expanded=False):
+        st.caption(
+            "These settings apply only until the page is refreshed or the app is restarted. "
+            "They do not affect the default behaviour."
+        )
+        extra_terms = st.text_area(
+            "Extra terms to always redact",
+            placeholder="e.g. Jane Smith\nAcme Care Ltd, Reference XYZ-99",
+            height=90,
+            help="Names, organisations or phrases that should always be redacted in this session. "
+                 "Separate with commas or new lines.",
+        )
+        custom_instructions = st.text_area(
+            "Custom LLM instructions",
+            placeholder=(
+                "e.g. Also flag any medication names.\n"
+                "Treat all street addresses as third-party identifiers."
+            ),
+            height=110,
+            help="Free-text instructions appended to the LLM redaction prompt for every document "
+                 "in this session. Use this to fine-tune what the model flags.",
+        )
+
+    if st.session_state.stage != "upload":
+        st.divider()
+        if st.button("🔄 Start New SAR", use_container_width=True):
+            _reset()
+            st.rerun()
+
+    # Disclaimer
+    st.divider()
+    st.markdown(
+        '<div class="sar-disclaimer">'
+        '<b>⚠ Beta Software — No Warranty</b><br>'
+        'This tool is in active development and provided for evaluation only. '
+        'All redaction decisions must be independently reviewed by a qualified '
+        'Information Governance professional before any SAR response is released. '
+        'The authors accept no liability for errors, omissions, or misuse.<br><br>'
+        '<b>🔒 Data Privacy</b><br>'
+        'All processing uses a local LLM running on this computer. '
+        '<b>No document content, patient data, or metadata is transmitted over the internet</b> '
+        'or shared with any third party.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
+# =============================================================================
+# Page header
+# =============================================================================
+
+_logo_tag = f'<img src="{_LOGO_B64}" alt="Logo">' if _LOGO_B64 else \
+    '<div style="width:54px;height:54px;background:rgba(0,94,184,.5);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:1.6rem">🔒</div>'
+
+st.markdown(f"""
+<div class="sar-header">
+  {_logo_tag}
+  <div class="sar-header-text">
+    <h1>SAR Redaction Tool</h1>
+    <p>NHS Subject Access Request · Multi-format bundle processor · UK GDPR / DPA 2018 / ICO compliant</p>
+  </div>
+  <div style="margin-left:auto;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+    <span class="badge-local">🔒 Fully Local — Zero data egress</span>
+    <span class="badge-test">⚠ Beta — Not for live use without IG review</span>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+if not DOCX_AVAILABLE:
+    st.warning("python-docx not installed — Word files unsupported. Run: `pip install python-docx`")
+if not TESSERACT_AVAILABLE:
+    st.info("Tesseract not available — TIFF/image files included in bundle but text redaction is not applied to image-only pages.")
+
+
+# =============================================================================
+# STAGE 1 — UPLOAD & ANALYSE
+# =============================================================================
+
+if st.session_state.stage == "upload":
+    st.divider()
+    st.subheader("① Upload Documents")
+    st.caption(
+        "Drag-and-drop files below, or paste a folder path to load an entire patient record folder.  "
+        "Supported: **PDF · Word (.docx) · TIFF · RTF · TXT · ZIP**"
+    )
+
+    uploaded_files = st.file_uploader(
+        "Browse or drop files (or a ZIP archive)",
+        type=ACCEPTED_FORMATS,
+        accept_multiple_files=True,
+        label_visibility="collapsed",
+    )
+
+    folder_path_input = st.text_input(
+        "Or load all documents from a folder path:",
+        placeholder=r"e.g. C:\Patient Records\John Smith",
+        help="Paste the full path to a folder on this computer. "
+             "All supported files (PDF, DOCX, TIFF, RTF, TXT, ZIP) inside it will be included.",
+    ).strip()
+
+    # Preview folder contents
+    _folder_files = []
+    if folder_path_input:
+        _fp = Path(folder_path_input)
+        if _fp.is_dir():
+            _folder_files = [
+                f for f in sorted(_fp.iterdir())
+                if f.is_file() and f.suffix.lower().lstrip(".") in _SUPPORTED_EXTS | {"zip"}
+            ]
+            if _folder_files:
+                st.info(
+                    f"📁 **{len(_folder_files)} file(s) found in folder:**  "
+                    + "  ·  ".join(f.name for f in _folder_files[:12])
+                    + ("…" if len(_folder_files) > 12 else "")
+                )
+            else:
+                st.warning("No supported files found in that folder.")
+        else:
+            st.error(f"Folder not found: `{folder_path_input}`")
+
+    _any_input = bool(uploaded_files) or bool(_folder_files)
+
+    if _any_input:
+        _n_uploaded = len(uploaded_files) if uploaded_files else 0
+        _n_folder   = len(_folder_files)
+        _n_total    = _n_uploaded + _n_folder
+        _zip_count  = sum(1 for f in (uploaded_files or []) if f.name.lower().endswith(".zip"))
+        _zip_count += sum(1 for f in _folder_files if f.suffix.lower() == ".zip")
+        _summary    = []
+        if _n_uploaded:
+            _summary.append(f"{_n_uploaded} uploaded file(s)")
+        if _n_folder:
+            _summary.append(f"{_n_folder} folder file(s)")
+        if _zip_count:
+            _summary.append(f"{_zip_count} ZIP(s) will be extracted")
+        st.info("**Ready:** " + "  ·  ".join(_summary))
+
+        if not patient_name.strip():
+            st.warning(
+                "⚠️ No patient name entered in the sidebar. "
+                "Enter the patient's full name so the LLM knows not to redact it."
+            )
+
+        if st.button("Analyse Documents", type="primary", use_container_width=True):
+            # Collect + expand ZIPs
+            all_files = _collect_all_files(uploaded_files, folder_path_input)
+            if not all_files:
+                st.error("No files to process after expansion.")
+                st.stop()
+
+            analyses = []
+            prog     = st.progress(0.0, text="Starting…")
+            status   = st.empty()
+
+            for i, ufile in enumerate(all_files):
+                prog.progress(
+                    i / len(all_files),
+                    text=f"Processing {ufile.name} ({i + 1}/{len(all_files)})…",
+                )
+
+                # Surface ZIP extraction errors
+                zip_err = getattr(ufile, "_zip_error", None)
+                if zip_err:
+                    analyses.append({
+                        "filename":            ufile.name,
+                        "section":             "Miscellaneous",
+                        "doc":                 None,
+                        "text":                "",
+                        "has_text":            False,
+                        "error":               f"ZIP extraction failed: {zip_err}",
+                        "proposed_redactions": [],
+                        "escalations":         [],
+                        "llm_raw":             "",
+                        "llm_parse_ok":        False,
+                        "doc_date":            datetime.date.min,
+                    })
+                    continue
+
+                # Ingest
+                status.markdown(f"📥 **Ingesting** `{ufile.name}`…")
+                fitz_doc, text, err = ingest_file(ufile)
+
+                if err or fitz_doc is None:
+                    analyses.append({
+                        "filename":            ufile.name,
+                        "section":             "Miscellaneous",
+                        "doc":                 None,
+                        "text":                "",
+                        "has_text":            False,
+                        "error":               err,
+                        "proposed_redactions": [],
+                        "escalations":         [],
+                        "llm_raw":             "",
+                        "llm_parse_ok":        False,
+                        "doc_date":            datetime.date.min,
+                    })
+                    continue
+
+                has_text = bool(text.strip())
+
+                # Extract document date for bundle ordering
+                doc_date = _extract_document_date(text) if has_text else datetime.date.min
+
+                # Classify
+                section = "Miscellaneous"
+                if auto_classify and has_text:
+                    status.markdown(f"🔍 **Classifying** `{ufile.name}`…")
+                    section = classify_document(text, selected_model)
+
+                # LLM analysis
+                llm_raw      = ""
+                llm_parse_ok = True
+                proposed     = []
+                escalations  = []
+
+                if has_text:
+                    status.markdown(f"🤖 **Analysing** `{ufile.name}` for SAR redactions…")
+                    result, llm_raw = llm_analyse_document(
+                        text, selected_model, patient_name,
+                        status_cb=lambda msg: status.markdown(f"🤖 **`{ufile.name}`** — {msg}"),
+                        extra_redactions=extra_terms,
+                        custom_instructions=custom_instructions,
+                    )
+                    llm_parse_ok    = result.get("parse_ok", False)
+                    raw_prop        = result.get("proposed_redactions", [])
+                    escalations     = result.get("escalations", [])
+
+                    # Deduplicate proposed redactions by text
+                    seen = set()
+                    for item in raw_prop:
+                        t = (item.get("text") or "").strip()
+                        if t and t not in seen:
+                            item["text"]     = t
+                            item["approved"] = True
+                            seen.add(t)
+                            proposed.append(item)
+
+                    # Remove any item that matches the patient's own name
+                    if patient_name.strip():
+                        pn_lower = patient_name.strip().lower()
+                        proposed = [
+                            p for p in proposed
+                            if pn_lower not in p["text"].lower()
+                            and p["text"].lower() not in pn_lower
+                        ]
+                        escalations = [
+                            e for e in escalations
+                            if pn_lower not in (e.get("text") or "").lower()
+                        ]
+
+                analyses.append({
+                    "filename":            ufile.name,
+                    "section":             section,
+                    "doc":                 fitz_doc,
+                    "text":                text,
+                    "has_text":            has_text,
+                    "error":               "",
+                    "proposed_redactions": proposed,
+                    "escalations":         escalations,
+                    "llm_raw":             llm_raw,
+                    "llm_parse_ok":        llm_parse_ok,
+                    "doc_date":            doc_date,
+                })
+
+            prog.progress(1.0, text="Analysis complete")
+            status.empty()
+            st.session_state.analyses   = analyses
+            st.session_state.stage      = "review"
+            st.session_state.play_sound = "chime"
+            st.rerun()
+
+    else:
+        st.info("Upload one or more documents above, or enter a folder path to begin.")
+        with st.expander("Accepted formats"):
+            st.markdown("""
+| Format | Extensions | Notes |
+|--------|-----------|-------|
+| PDF | `.pdf` | Full text redaction; image-only pages included without OCR unless Tesseract is installed |
+| Word | `.docx` `.doc` | Requires `python-docx` |
+| TIFF | `.tiff` `.tif` | Requires Tesseract for OCR redaction |
+| RTF | `.rtf` | Requires `striprtf`; falls back to basic text stripping |
+| Plain text | `.txt` | Full redaction support |
+| ZIP archive | `.zip` | All supported files inside will be extracted and processed automatically |
+| **Folder** | — | Paste a folder path in the text box above to load all files in one go |
+            """)
+
+
+# =============================================================================
+# STAGE 2 — REVIEW & APPROVE
+# =============================================================================
+
+elif st.session_state.stage == "review":
+    st.divider()
+
+    _analyses   = st.session_state.analyses
+    _total_prop = sum(len(a["proposed_redactions"]) for a in _analyses)
+    _total_esc  = sum(len(a["escalations"])         for a in _analyses)
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Documents",           len(_analyses))
+    m2.metric("Proposed redactions", _total_prop)
+    m3.metric("Escalations",         _total_esc)
+
+    if _total_esc > 0:
+        st.error(
+            f"⚠️ **{_total_esc} escalation(s)** require clinical or IG review before release. "
+            "See the highlighted sections below — these are NOT automatically redacted."
+        )
+
+    if _total_prop == 0 and _total_esc == 0:
+        st.warning(
+            "The LLM did not propose any redactions or escalations across any document.  \n\n"
+            "**If this seems wrong**, enable **Show LLM debug output** in the sidebar to see "
+            "the raw response from the model. Common causes:  \n"
+            "• Model not outputting JSON — try **llama3.1** or **qwen2.5**  \n"
+            "• Documents genuinely contain no third-party or sensitive content  \n\n"
+            "You can still build and download the bundle using the button below."
+        )
+
+    st.markdown("### Review Proposed Redactions")
+    st.caption(
+        "Tick **✓** to approve a redaction · untick to keep the text as-is.  "
+        "You can edit the Replacement Label column.  "
+        "Escalations require a manual decision before the document is released."
+    )
+    st.divider()
+
+    for i, analysis in enumerate(_analyses):
+        fname      = analysis["filename"]
+        n_red      = len(analysis["proposed_redactions"])
+        n_esc      = len(analysis["escalations"])
+        has_err    = bool(analysis.get("error"))
+        n_approved = sum(1 for r in analysis["proposed_redactions"] if r.get("approved", True))
+
+        icon = "❌" if has_err else ("🔴" if n_esc > 0 else ("✏️" if n_red > 0 else "✅"))
+
+        _doc_date = analysis.get("doc_date")
+        _date_str = (
+            _doc_date.strftime("%d/%m/%Y")
+            if _doc_date and _doc_date != datetime.date.min
+            else "date unknown"
+        )
+        with st.expander(
+            f"{icon}  {fname}  —  {n_approved}/{n_red} redactions approved  ·  "
+            f"{n_esc} escalation(s)  ·  {_date_str}  ·  section: **{analysis['section']}**",
+            expanded=(n_esc > 0 or n_red > 0 or has_err),
+        ):
+            if has_err:
+                st.error(f"Failed to process: {analysis['error']}")
+                continue
+
+            # LLM debug output
+            if show_debug:
+                llm_raw      = analysis.get("llm_raw", "")
+                llm_parse_ok = analysis.get("llm_parse_ok", True)
+                n_chunks     = analysis.get("chunks_analysed", 1)
+                chars_total  = analysis.get("chars_total", 0)
+                with st.expander(
+                    "🔧 Raw LLM response",
+                    expanded=(not llm_parse_ok or (n_red == 0 and n_esc == 0)),
+                ):
+                    if chars_total:
+                        covered = min(n_chunks * 6000, chars_total)
+                        pct = int(covered / chars_total * 100)
+                        st.caption(
+                            f"Document: {chars_total:,} chars · "
+                            f"Analysed: {n_chunks} chunk(s) · "
+                            f"Coverage: ~{pct}%"
+                        )
+                    if not llm_raw:
+                        st.info("No LLM response recorded (file had no extractable text).")
+                    elif not llm_parse_ok:
+                        st.warning(
+                            "⚠️ The LLM response could not be parsed as JSON.  \n"
+                            "The model may not be following the output format instruction.  \n"
+                            "Try **qwen2.5:14b** for reliable JSON output."
+                        )
+                        st.code(llm_raw, language=None)
+                    else:
+                        if n_red == 0 and n_esc == 0:
+                            st.success(
+                                "✅ JSON parsed successfully. "
+                                "The LLM found no third-party or sensitive content "
+                                "requiring redaction in this document."
+                            )
+                        st.code(llm_raw, language="json")
+
+            if not analysis["has_text"]:
+                st.warning(
+                    "No text layer detected. This file will be included in the bundle "
+                    "but automated redaction cannot be applied. Manual review recommended."
+                )
+
+            # Section override
+            new_sec = st.selectbox(
+                "Bundle section",
+                SECTION_ORDER,
+                index=SECTION_ORDER.index(analysis["section"])
+                      if analysis["section"] in SECTION_ORDER else 0,
+                key=f"sec_{i}",
+            )
+            analysis["section"] = new_sec
+            st.divider()
+
+            # ── Escalations ──────────────────────────────────────────────────
+            if analysis["escalations"]:
+                st.markdown("#### 🔴 Escalations — Clinical / IG Review Required")
+                st.caption(
+                    "These items are **not automatically redacted**. "
+                    "Review each one and decide: tick 'Add to redactions' to redact, "
+                    "or leave unticked to release the text as-is."
+                )
+                for ei, esc in enumerate(analysis["escalations"]):
+                    tag_info = REDACTION_TAGS.get(esc.get("tag", ""), {})
+                    with st.container(border=True):
+                        c1, c2 = st.columns([1, 2])
+                        with c1:
+                            st.markdown(f"**{tag_info.get('label', esc.get('tag', ''))}**")
+                            st.caption(esc.get("reason", ""))
+                        with c2:
+                            st.code(esc.get("text", ""), language=None)
+                            st.caption(f"*Context:* {esc.get('context', '')}")
+
+                        add_key = f"esc_add_{i}_{ei}"
+                        if st.checkbox("➕ Add to redactions", key=add_key):
+                            existing = {r["text"] for r in analysis["proposed_redactions"]}
+                            t = esc.get("text", "")
+                            if t and t not in existing:
+                                analysis["proposed_redactions"].append({
+                                    "text":        t,
+                                    "tag":         esc.get("tag", ""),
+                                    "reason":      esc.get("reason", ""),
+                                    "replacement": f"[REDACTED - {esc.get('reason', 'escalation')}]",
+                                    "context":     esc.get("context", ""),
+                                    "approved":    True,
+                                })
+                                if f"editor_{i}" in st.session_state:
+                                    del st.session_state[f"editor_{i}"]
+                st.divider()
+
+            # ── Proposed redactions table ─────────────────────────────────────
+            if analysis["proposed_redactions"]:
+                st.markdown("#### ✏️ Proposed Redactions")
+
+                ba1, ba2, _ = st.columns([1, 1, 5])
+                if ba1.button("Approve All", key=f"app_all_{i}"):
+                    for r in analysis["proposed_redactions"]:
+                        r["approved"] = True
+                    if f"editor_{i}" in st.session_state:
+                        del st.session_state[f"editor_{i}"]
+                    st.rerun()
+                if ba2.button("Reject All", key=f"rej_all_{i}"):
+                    for r in analysis["proposed_redactions"]:
+                        r["approved"] = False
+                    if f"editor_{i}" in st.session_state:
+                        del st.session_state[f"editor_{i}"]
+                    st.rerun()
+
+                if PANDAS_AVAILABLE:
+                    df_rows = []
+                    for r in analysis["proposed_redactions"]:
+                        tag_info = REDACTION_TAGS.get(r.get("tag", ""), {})
+                        df_rows.append({
+                            "Approve":     r.get("approved", True),
+                            "Text":        r.get("text", ""),
+                            "Category":    tag_info.get("label", r.get("tag", "")),
+                            "Reason":      r.get("reason", ""),
+                            "Context":     (r.get("context") or "")[:150],
+                            "Replacement": r.get("replacement", "[REDACTED]"),
+                        })
+                    df = pd.DataFrame(df_rows)
+
+                    edited = st.data_editor(
+                        df,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Approve":     st.column_config.CheckboxColumn("✓", width=60),
+                            "Text":        st.column_config.TextColumn("Text to Redact",      width="medium"),
+                            "Category":    st.column_config.TextColumn("Category",            width="medium"),
+                            "Reason":      st.column_config.TextColumn("Reason",              width="medium"),
+                            "Context":     st.column_config.TextColumn("Surrounding Context", width="large"),
+                            "Replacement": st.column_config.TextColumn("Replacement Label",   width="medium"),
+                        },
+                        disabled=["Text", "Category", "Reason", "Context"],
+                        key=f"editor_{i}",
+                    )
+                    # Write approvals and replacement text back to session state
+                    for j, row in edited.iterrows():
+                        if j < len(analysis["proposed_redactions"]):
+                            analysis["proposed_redactions"][j]["approved"]    = bool(row["Approve"])
+                            analysis["proposed_redactions"][j]["replacement"] = str(row["Replacement"])
+
+                else:
+                    # Fallback without pandas
+                    for j, r in enumerate(analysis["proposed_redactions"]):
+                        tag_info = REDACTION_TAGS.get(r.get("tag", ""), {})
+                        c1, c2 = st.columns([1, 5])
+                        with c1:
+                            r["approved"] = st.checkbox(
+                                "Approve", value=r.get("approved", True),
+                                key=f"cb_{i}_{j}",
+                            )
+                        with c2:
+                            st.markdown(
+                                f"**{tag_info.get('label', r.get('tag', ''))}** "
+                                f"— `{r.get('text', '')}`  \n"
+                                f"*{r.get('reason', '')}*"
+                            )
+
+            elif analysis["has_text"] and not analysis["escalations"]:
+                st.success("No redactions proposed. Verify the document manually if needed.")
+
+    # ── Apply button ──────────────────────────────────────────────────────────
+    st.divider()
+    _approved_final = sum(
+        sum(1 for r in a["proposed_redactions"] if r.get("approved", True))
+        for a in _analyses
+    )
+    st.markdown(f"**{_approved_final} redaction(s) approved** and ready to apply.")
+
+    if st.button("Apply Approved Redactions & Build Bundle", type="primary", use_container_width=True):
+        prog   = st.progress(0.0)
+        status = st.empty()
+        proc   = []
+
+        for i, analysis in enumerate(_analyses):
+            if analysis.get("error") or analysis.get("doc") is None:
+                continue
+            prog.progress(
+                i / max(len(_analyses), 1),
+                text=f"Redacting {analysis['filename']}…",
+            )
+            status.markdown(f"✏️ Applying redactions to **{analysis['filename']}**…")
+            approved = [r for r in analysis["proposed_redactions"] if r.get("approved", True)]
+            doc, cnt = apply_approved_redactions(analysis["doc"], approved)
+            proc.append({
+                "filename":        analysis["filename"],
+                "section":         analysis["section"],
+                "doc":             doc,
+                "redaction_count": cnt,
+                "doc_date":        analysis.get("doc_date", datetime.date.min),
+            })
+
+        prog.progress(0.9, text="Building PDF bundle…")
+        status.markdown("📎 Building bundle PDF…")
+
+        bundle = build_bundle(
+            proc,
+            sar_ref=sar_ref,
+            operator=operator_name,
+            date_str=datetime.date.today().strftime("%d/%m/%Y"),
+        )
+        buf = io.BytesIO()
+        bundle.save(buf)
+        buf.seek(0)
+
+        today    = datetime.date.today().strftime("%Y%m%d")
+        safe_ref = re.sub(r"[^\w\-]", "_", sar_ref or "SAR")
+        st.session_state.bundle_bytes  = buf.getvalue()
+        st.session_state.bundle_fname  = f"{today}_{safe_ref}_REDACTED_BUNDLE.pdf"
+        st.session_state.proc_summary  = [
+            {
+                "File":       p["filename"],
+                "Section":    p["section"],
+                "Redactions": p["redaction_count"],
+                "Status":     "✅",
+            }
+            for p in proc
+        ]
+        prog.progress(1.0)
+        status.empty()
+        st.session_state.stage      = "export"
+        st.session_state.play_sound = "fanfare"
+        st.rerun()
+
+
+# =============================================================================
+# STAGE 3 — EXPORT
+# =============================================================================
+
+elif st.session_state.stage == "export":
+    st.divider()
+    st.success("✅ Redacted bundle is ready for download — review all decisions before releasing to the data subject.")
+    st.markdown(
+        '<div class="sar-disclaimer">'
+        '<b>⚠ Important — Human review required before release</b><br>'
+        'This output was generated by an AI system currently in beta testing. '
+        'It must be checked by a qualified Information Governance or clinical professional '
+        'before being sent to the data subject. The tool\'s authors accept no liability for '
+        'incorrect, incomplete, or excessive redactions. Use of this tool in a live SAR '
+        'process is entirely at the discretion and responsibility of the operating organisation.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    summary = st.session_state.get("proc_summary", [])
+    if summary:
+        total_r = sum(d["Redactions"] for d in summary)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Documents in bundle",      len(summary))
+        c2.metric("Total redactions applied", total_r)
+        c3.metric("Reviewed by",              operator_name or "—")
+
+        if PANDAS_AVAILABLE:
+            st.dataframe(
+                pd.DataFrame(summary)[["File", "Section", "Redactions", "Status"]],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    st.download_button(
+        label="⬇  Download Redacted Bundle PDF",
+        data=st.session_state.bundle_bytes,
+        file_name=st.session_state.bundle_fname,
+        mime="application/pdf",
+        use_container_width=True,
+        type="primary",
+    )
+
+    st.info(
+        "**Governance reminder (ICO / BMA / NHS England):**  "
+        "All SAR redaction decisions should be reviewed by an appropriate clinician or IG lead. "
+        "Decisions must be defensible under UK GDPR and DPA 2018. "
+        "Patients should be informed when exemptions have been applied and of their right "
+        "to complain to the ICO."
+    )
+
+    if st.button("🔄 Process Another SAR", use_container_width=True):
+        _reset()
+        st.rerun()
