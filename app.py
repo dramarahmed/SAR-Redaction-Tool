@@ -1408,15 +1408,19 @@ if st.session_state.stage == "upload":
             )
 
         if st.button("Analyse Documents", type="primary", use_container_width=True):
+            # Show UI immediately so the user knows something is happening
+            prog   = st.progress(0.0, text="⏳ Preparing files…")
+            status = st.empty()
+            status.info("📂 Collecting and unpacking files — please wait…")
+
             # Collect + expand ZIPs
             all_files = _collect_all_files(uploaded_files, folder_path_input)
             if not all_files:
                 st.error("No files to process after expansion.")
                 st.stop()
 
-            analyses = []
-            prog     = st.progress(0.0, text="Starting…")
-            status   = st.empty()
+            analyses          = []
+            _model_warm_shown = False   # track whether we've warned about model warm-up
 
             for i, ufile in enumerate(all_files):
                 prog.progress(
@@ -1470,7 +1474,15 @@ if st.session_state.stage == "upload":
                 # Classify
                 section = "Miscellaneous"
                 if auto_classify and has_text:
-                    status.markdown(f"🔍 **Classifying** `{ufile.name}`…")
+                    if not _model_warm_shown:
+                        status.info(
+                            f"🔍 **Classifying** `{ufile.name}`…  \n"
+                            "⏳ *First call loads the AI model into memory — "
+                            "this can take up to 60 seconds. The app is working.*"
+                        )
+                        _model_warm_shown = True
+                    else:
+                        status.markdown(f"🔍 **Classifying** `{ufile.name}`…")
                     section = classify_document(text, selected_model)
 
                 # LLM analysis
@@ -1480,7 +1492,15 @@ if st.session_state.stage == "upload":
                 escalations  = []
 
                 if has_text:
-                    status.markdown(f"🤖 **Analysing** `{ufile.name}` for SAR redactions…")
+                    if not _model_warm_shown:
+                        status.info(
+                            f"🤖 **Analysing** `{ufile.name}`…  \n"
+                            "⏳ *First call loads the AI model into memory — "
+                            "this can take up to 60 seconds. The app is working.*"
+                        )
+                        _model_warm_shown = True
+                    else:
+                        status.markdown(f"🤖 **Analysing** `{ufile.name}` for SAR redactions…")
                     result, llm_raw = llm_analyse_document(
                         text, selected_model, patient_name,
                         status_cb=lambda msg: status.markdown(f"🤖 **`{ufile.name}`** — {msg}"),
