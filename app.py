@@ -1762,11 +1762,11 @@ with st.sidebar:
     # ── Mode selector ─────────────────────────────────────────────────────────
     _mode_choice = st.radio(
         "Select tool",
-        ["🔒 SAR Redaction", "📋 Insurance Form Filler"],
+        ["🔒 SAR Redaction", "📋 Forms"],
         key="tool_mode_radio",
         label_visibility="collapsed",
     )
-    tool_mode = "form_filler" if "Form Filler" in _mode_choice else "sar"
+    tool_mode = "form_filler" if "Forms" in _mode_choice else "sar"
     st.session_state.tool_mode = tool_mode
 
     st.divider()
