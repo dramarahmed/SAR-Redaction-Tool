@@ -54,9 +54,17 @@ if not errorlevel 1 (
     for /f "delims=" %%P in ('py -3 -c "import sys; print(sys.executable)" 2^>nul') do (
         if not defined PYTHON_EXE (
             echo "%%P" | findstr /i "WindowsApps" >nul 2>&1
-            if errorlevel 1 set "PYTHON_EXE=%%P"
+            if errorlevel 1 (
+                :: Verify it is an actual file, not a "Python was not found" message
+                if exist "%%P" set "PYTHON_EXE=%%P"
+            )
         )
     )
+)
+:: Verify the detected Python is accessible to the current user
+if defined PYTHON_EXE (
+    "%PYTHON_EXE%" --version >nul 2>&1
+    if errorlevel 1 set "PYTHON_EXE="
 )
 
 :: Fall back to known install locations
@@ -83,6 +91,11 @@ if not defined PYTHON_EXE (
         )
     )
 )
+:: Verify the detected Python is accessible to the current user
+if defined PYTHON_EXE (
+    "%PYTHON_EXE%" --version >nul 2>&1
+    if errorlevel 1 set "PYTHON_EXE="
+)
 
 if not defined PYTHON_EXE (
     echo        Not found.  Checking for winget...
@@ -97,15 +110,21 @@ if not defined PYTHON_EXE (
         exit /b 1
     )
     echo        Installing Python 3.12 for all users via winget...
-    :: --scope machine  = installs to C:\Program Files\Python312 (all users)
-    :: --force          = installs even if a per-user version already exists
-    winget install --id Python.Python.3.12 -e --silent --scope machine --force --accept-source-agreements --accept-package-agreements
+    :: --scope machine + --override passes InstallAllUsers=1 to the Python .exe
+    :: installer directly, bypassing winget's own "already installed" logic.
+    :: This installs Python to C:\Program Files\Python312 (accessible to all users)
+    :: even when a per-user version already exists for a different Windows account.
+    winget install --id Python.Python.3.12 -e --scope machine --override "/quiet InstallAllUsers=1 PrependPath=1 Include_launcher=1" --accept-source-agreements --accept-package-agreements
     if errorlevel 1 (
         echo.
         echo  ERROR: Could not install Python automatically.
-        echo  Please install Python 3.12 from https://python.org
-        echo  On the installer, tick "Install for all users" and "Add Python to PATH",
-        echo  then re-run this script.
+        echo  Please install Python 3.12 manually:
+        echo    1. Go to https://python.org/downloads
+        echo    2. Download Python 3.12 for Windows
+        echo    3. Run the installer
+        echo    4. Tick "Install for all users" (requires admin^)
+        echo    5. Tick "Add Python to PATH"
+        echo    6. Complete the install, then re-run this script.
         pause
         exit /b 1
     )
@@ -115,7 +134,9 @@ if not defined PYTHON_EXE (
     where py >nul 2>&1
     if not errorlevel 1 (
         for /f "delims=" %%P in ('py -3 -c "import sys; print(sys.executable)" 2^>nul') do (
-            if not defined PYTHON_EXE set "PYTHON_EXE=%%P"
+            if not defined PYTHON_EXE (
+                if exist "%%P" set "PYTHON_EXE=%%P"
+            )
         )
     )
     if not defined PYTHON_EXE (

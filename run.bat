@@ -63,7 +63,9 @@ if errorlevel 1 (
             for /f "delims=" %%P in ('py -3 -c "import sys; print(sys.executable)" 2^>nul') do (
                 if not defined REPAIR_PYTHON (
                     echo "%%P" | findstr /i "WindowsApps" >nul 2>&1
-                    if errorlevel 1 set "REPAIR_PYTHON=%%P"
+                    if errorlevel 1 (
+                        if exist "%%P" set "REPAIR_PYTHON=%%P"
+                    )
                 )
             )
         )
