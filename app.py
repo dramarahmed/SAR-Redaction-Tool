@@ -59,6 +59,7 @@ except Exception:
 # =============================================================================
 
 REDACTION_TAGS = {
+    # ── Auto-redact ───────────────────────────────────────────────────────────
     "THIRD_PARTY_IDENTIFIER": {
         "label":  "Third-party identifier",
         "desc":   "Name or identifying detail of a private individual (family, carer, neighbour, friend)",
@@ -84,6 +85,17 @@ REDACTION_TAGS = {
         "desc":   "Text that would identify a third party without naming them explicitly",
         "action": "redact",
     },
+    # ── Escalate for qualified human decision ─────────────────────────────────
+    "CLINICIAN_CONTEXT_AMBIGUOUS": {
+        "label":  "Clinician — context ambiguous",
+        "desc":   (
+            "A clinician name that appears in a non-professional context: named as a patient, "
+            "as a complainant, as the subject of an internal complaint or investigation, or "
+            "where their role is unclear (e.g. locum/agency staff). "
+            "Clinicians named in their ordinary professional capacity are NOT redacted."
+        ),
+        "action": "escalate",
+    },
     "SAFEGUARDING_RISK": {
         "label":  "Safeguarding concern",
         "desc":   "Safeguarding referral, MARAC, CP concern, LAC, MASH referral — requires clinical/IG review",
@@ -101,17 +113,44 @@ REDACTION_TAGS = {
     },
     "SERIOUS_HARM_RISK": {
         "label":  "Serious harm risk",
-        "desc":   "Suicide/self-harm risk, violence risk, psychotic risk — may be withheld under DPA 2018 s.15",
+        "desc":   (
+            "Information whose disclosure could cause serious physical or mental harm to the "
+            "patient or a third party (DPA 2018 Sch.3 para.5 / s.15). "
+            "Includes acute active suicide/self-harm risk, credible violence risk, acute psychotic "
+            "risk. Routine historical mental health notes are NOT covered by this exemption."
+        ),
         "action": "escalate",
     },
     "SENSITIVE_CLINICAL_OPINION": {
-        "label":  "Sensitive clinical opinion",
-        "desc":   "Notes on symptom fabrication, personality disorder traits, dangerous behaviour",
+        "label":  "Harmful clinical opinion",
+        "desc":   (
+            "Clinical opinion that, if disclosed, could cause serious harm or engages a specific "
+            "exemption — NOT routine clinical opinion, which is the patient's own data and must "
+            "be disclosed. Covers: explicit notes on symptom fabrication / factitious disorder, "
+            "notes recording a credible and current risk of violence by the patient, or opinion "
+            "that would directly identify and potentially harm a named third party."
+        ),
         "action": "escalate",
     },
     "LEGAL_PRIVILEGE": {
         "label":  "Legal / investigation material",
-        "desc":   "Legal advice, court reports, expert witness reports, internal investigations",
+        "desc":   (
+            "Material that may attract an exemption under DPA 2018 Sch.3: legal advice, court "
+            "reports, expert witness reports, internal disciplinary or complaints investigations "
+            "(Sch.3 para.19), management forecasting / planning information (Sch.3 para.6), or "
+            "formal negotiation records (Sch.3 para.7). Requires IG / legal review."
+        ),
+        "action": "escalate",
+    },
+    "DPA_SCHEDULE3_EXEMPTION": {
+        "label":  "DPA 2018 Sch.3 — other exemption",
+        "desc":   (
+            "Content that may engage a Schedule 3 DPA 2018 exemption not captured elsewhere: "
+            "research, statistics or history data (Sch.3 para.8); exam scripts before publication "
+            "(Sch.3 para.9); regulatory / supervisory body material (Sch.3 para.10); or data "
+            "from a separate data controller whose provenance is unclear in a shared-care or "
+            "ICB-held record. Requires IG review to identify the applicable head of exemption."
+        ),
         "action": "escalate",
     },
 }
@@ -639,45 +678,89 @@ _SAR_SYSTEM = (
 _SAR_PROMPT_TMPL = """\
 You are an NHS Information Governance officer processing a Subject Access Request (SAR).
 Analyse ONLY the text between the --- markers below.
-Identify everything that must be redacted under UK GDPR / DPA 2018 / ICO guidance.
-Be thorough — clinical records routinely contain third-party names that must be redacted.
+Apply UK GDPR / DPA 2018 / ICO guidance and the BMA guidance on access to health records.
 
-DO NOT FLAG FOR REDACTION:
+━━━ DO NOT FLAG FOR REDACTION ━━━
 {patient_line}\
-- The patient's own name, DOB, NHS number, address — this is their own personal data
-- Clinician names (GP, nurse, consultant, pharmacist) acting in a professional role
-- NHS Trust, hospital, GP practice, clinic or department names
-- The patient's own clinical findings, diagnoses, medications, test results
-- Standard appointment or administrative text
+• The patient's own name, DOB, NHS number, address, clinical findings, diagnoses,
+  medications and test results — this is their own personal data and MUST be disclosed.
+• Routine clinical opinion — clinical opinions, assessments and judgements recorded about
+  the patient are the patient's own data. Do NOT escalate them unless they meet the
+  specific "SENSITIVE_CLINICAL_OPINION" criteria below.
+• Clinician names (GP, nurse, consultant, pharmacist, AHP) appearing in their ORDINARY
+  PROFESSIONAL CAPACITY — e.g. signing a letter, recording a consultation, ordering a test.
+  Exception: escalate as CLINICIAN_CONTEXT_AMBIGUOUS if the clinician is named as a
+  patient, as the complainant/subject of a complaint, or in a context where their personal
+  data (not their professional act) is being recorded.
+• NHS Trust, hospital, GP practice, clinic or department names.
+• Standard appointment dates, referral acknowledgements, administrative notices.
 
-PROPOSE FOR REDACTION — copy the exact tag name into the "tag" field:
-THIRD_PARTY_IDENTIFIER   — full or partial name of any family member, partner, carer, neighbour, friend, employer, teacher, school contact
+━━━ PROPOSE FOR AUTO-REDACTION ━━━
+Copy the EXACT tag name. Redact the minimum span — a name or phrase, not a whole sentence.
+
+THIRD_PARTY_IDENTIFIER   — name or identifying detail of any private individual:
+                           family member, partner, carer, neighbour, friend, employer,
+                           teacher, school contact, or any unnamed member of the public.
 CONFIDENTIAL_DISCLOSURE  — information given in confidence or anonymously by a third party
-OTHER_PATIENT_DATA       — data clearly belonging to a different patient (misfiled notes, wrong results)
-AGENCY_CONFIDENTIAL_INFO — social worker, school, police or probation report that names a third party
-INDIRECT_IDENTIFIER      — text that would identify a third party without naming them (e.g. "your son at St Peter's Primary")
+                           (ICO guidance: the identity of the third party may be withheld).
+OTHER_PATIENT_DATA       — data clearly belonging to a different patient: misfiled notes,
+                           wrong-patient test results, clinic lists showing other patients.
+AGENCY_CONFIDENTIAL_INFO — content of a social work, police, probation or school report
+                           that names or identifies a third party.
+INDIRECT_IDENTIFIER      — text that would identify a private third party without naming
+                           them (e.g. "your son at St Peter's Primary", "the neighbour at
+                           No. 14", "your partner who works at the council").
 
-ESCALATE for human review — do NOT auto-redact — copy the exact tag name:
-SAFEGUARDING_RISK          — safeguarding referrals, MARAC, CP concerns, MASH referrals
-DOMESTIC_ABUSE_CONTEXT     — domestic abuse, coercive control, DASH assessment
-CHILD_PROTECTION           — CP plans, Section 47/17, CP conferences, LADO
-SERIOUS_HARM_RISK          — suicide/self-harm risk, violence risk, psychotic risk
-SENSITIVE_CLINICAL_OPINION — fabrication concerns, personality disorder notes, dangerous behaviour
-LEGAL_PRIVILEGE            — legal advice, court reports, internal investigation material
+━━━ ESCALATE FOR QUALIFIED HUMAN REVIEW — do NOT auto-redact ━━━
+These require a clinical or IG professional to make an active decision before any action.
 
-Rules for the "text" field:
-- Copy the text EXACTLY as it appears in the document, character for character
-- Include only the minimum span needed (a name, a phrase — not a whole sentence)
-- Never include the patient's own name
+CLINICIAN_CONTEXT_AMBIGUOUS — a clinician name appearing in an ambiguous or non-professional
+                              context: named as a patient in this record, named as the subject
+                              of or complainant in a formal complaint or investigation, or
+                              where their role is unclear (locum/agency with no stated role).
+SAFEGUARDING_RISK           — safeguarding referrals, MARAC discussions, CP concerns,
+                              LAC / MASH referrals. Releasing or withholding requires
+                              a qualified decision; neither is automatic.
+DOMESTIC_ABUSE_CONTEXT      — domestic abuse or coercive control disclosures, DASH risk
+                              assessment results, MARAC referral details.
+CHILD_PROTECTION            — CP plans, Section 47 or Section 17 enquiries,
+                              CP conferences, LADO referrals.
+SERIOUS_HARM_RISK           — content that could cause SERIOUS physical or mental harm if
+                              disclosed (DPA 2018 Sch.3 para.5). Applies to ACUTE, ACTIVE
+                              risk only: credible imminent suicide or self-harm risk,
+                              credible current violence risk, acute psychotic risk. Routine
+                              or historical mental health notes do NOT qualify.
+SENSITIVE_CLINICAL_OPINION  — clinical opinion that, if disclosed, could cause serious harm
+                              or identifies a third party harmfully. Specifically:
+                              (a) explicit notes on factitious disorder / symptom fabrication;
+                              (b) opinion recording a credible and current risk of violence
+                              BY the patient; (c) opinion that would directly identify and
+                              harm a named third party. Routine clinical opinion, including
+                              personality disorder diagnoses, is the patient's own data and
+                              must NOT be escalated under this tag.
+LEGAL_PRIVILEGE             — legal advice, court reports, expert witness reports, internal
+                              disciplinary or complaints investigation records (Sch.3 para.19),
+                              management forecasting / planning information (Sch.3 para.6),
+                              or formal negotiation records (Sch.3 para.7).
+DPA_SCHEDULE3_EXEMPTION     — content that may engage a Sch.3 DPA 2018 exemption not listed
+                              above: research/statistics/history data (Sch.3 para.8); exam
+                              scripts before publication (Sch.3 para.9); regulatory body
+                              material (Sch.3 para.10); or data whose originating data
+                              controller is unclear (e.g. shared-care record, ICB-held data).
 
-Output this JSON object and nothing else:
+━━━ OUTPUT RULES ━━━
+• "text": copy EXACTLY as it appears — character for character, minimum span only.
+• "replacement": for auto-redactions only; use the format [REDACTED — reason].
+• Never include the patient's own name in any "text" field.
+
+Output this JSON and nothing else:
 {{
   "proposed_redactions": [
     {{
       "text": "exact verbatim text from the document",
       "tag": "THIRD_PARTY_IDENTIFIER",
-      "reason": "Brief explanation",
-      "replacement": "[REDACTED - third-party personal data]",
+      "reason": "Brief explanation (one sentence)",
+      "replacement": "[REDACTED — third-party personal data]",
       "context": "Up to 30 words of surrounding context"
     }}
   ],
@@ -685,13 +768,13 @@ Output this JSON object and nothing else:
     {{
       "text": "exact verbatim text",
       "tag": "SAFEGUARDING_RISK",
-      "reason": "Brief explanation",
+      "reason": "Brief explanation (one sentence)",
       "context": "Up to 30 words of surrounding context"
     }}
   ]
 }}
 
-If nothing in this excerpt needs redaction or escalation return:
+If nothing requires redaction or escalation return exactly:
 {{"proposed_redactions": [], "escalations": []}}
 
 Document excerpt:
@@ -1744,7 +1827,7 @@ with st.sidebar:
         '<div style="text-align:center;font-size:1.1rem;font-weight:700;'
         'color:#fff;margin:6px 0 2px">NHS Clinical Tools</div>'
         '<div style="text-align:center;font-size:.72rem;color:rgba(140,180,220,.7);margin-bottom:8px">'
-        'SAR Redaction · Insurance Form Filler</div>',
+        'SAR Redaction · Forms</div>',
         unsafe_allow_html=True,
     )
 
@@ -1921,7 +2004,7 @@ if tool_mode == "sar":
     _header_title = "SAR Redaction Tool"
     _header_sub   = "NHS Subject Access Request · Multi-format bundle processor · UK GDPR / DPA 2018 / ICO compliant"
 else:
-    _header_title = "Insurance Form Filler"
+    _header_title = "Forms"
     _header_sub   = "Complete insurance & GP report forms automatically from patient records · 100% local AI"
 
 st.markdown(f"""
