@@ -330,7 +330,7 @@ echo.
 ::  Step 6: Desktop shortcut
 :: =============================================================
 echo  [6/6] Creating desktop shortcut...
-powershell -NoProfile -Command "$ws = New-Object -ComObject WScript.Shell; $lnk = $ws.CreateShortcut([Environment]::GetFolderPath('Desktop') + '\SAR Redaction Tool.lnk'); $lnk.TargetPath = '%~dp0run.bat'; $lnk.WorkingDirectory = '%~dp0'; $lnk.IconLocation = 'shell32.dll,23'; $lnk.Description = 'SAR Redaction Tool'; $lnk.Save()"
+powershell -NoProfile -Command "$ws = New-Object -ComObject WScript.Shell; $lnk = $ws.CreateShortcut([Environment]::GetFolderPath('CommonDesktopDirectory') + '\SAR Redaction Tool.lnk'); $lnk.TargetPath = '%~dp0run.bat'; $lnk.WorkingDirectory = '%~dp0'; $lnk.IconLocation = 'shell32.dll,23'; $lnk.Description = 'SAR Redaction Tool'; $lnk.Save()"
 if errorlevel 1 (
     echo  WARNING: Could not create desktop shortcut automatically.
     echo  To launch manually: right-click run.bat ^> Send to ^> Desktop (create shortcut^)
