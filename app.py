@@ -748,6 +748,9 @@ Apply UK GDPR / DPA 2018 / ICO guidance and the BMA guidance on access to health
 {patient_line}\
 • The patient's own name, DOB, NHS number, address, clinical findings, diagnoses,
   medications and test results — this is their own personal data and MUST be disclosed.
+  NOTE: only the patient's OWN DOB is protected. Any date of birth that differs from
+  the patient's DOB and belongs to a third party (e.g. a perpetrator, next of kin,
+  or misfiled patient) MUST be flagged as THIRD_PARTY_IDENTIFIER or OTHER_PATIENT_DATA.
 • Routine clinical opinion — clinical opinions, assessments and judgements recorded about
   the patient are the patient's own data. Do NOT escalate them unless they meet the
   specific "SENSITIVE_CLINICAL_OPINION" criteria below.
@@ -765,10 +768,19 @@ Copy the EXACT tag name. Redact the minimum span — a name or phrase, not a who
 THIRD_PARTY_IDENTIFIER   — name or identifying detail of any private individual:
                            family member, partner, carer, neighbour, friend, employer,
                            teacher, school contact, or any unnamed member of the public.
+                           This INCLUDES their date of birth, phone number, NHS number,
+                           address, and any other personal data appearing in structured
+                           blocks (e.g. "Perpetrator details:", "Emergency contact:",
+                           "Next of kin:") — redact ALL fields in such blocks, not just
+                           the name. Create a separate entry for EACH field (name, DOB,
+                           phone, address) so each is individually redacted.
 CONFIDENTIAL_DISCLOSURE  — information given in confidence or anonymously by a third party
                            (ICO guidance: the identity of the third party may be withheld).
 OTHER_PATIENT_DATA       — data clearly belonging to a different patient: misfiled notes,
                            wrong-patient test results, clinic lists showing other patients.
+                           Redact ALL identifying fields for the other patient including their
+                           name, date of birth, NHS number, address, and any other personal
+                           identifiers — create a SEPARATE entry for each field.
 AGENCY_CONFIDENTIAL_INFO — (a) the name and direct contact details of any social worker,
                            police officer, housing officer, probation officer or school
                            staff member named in their professional capacity in a referral
@@ -826,6 +838,8 @@ DPA_SCHEDULE3_EXEMPTION     — content that may engage a Sch.3 DPA 2018 exempti
   document (e.g. full name "Jane Smith" at first mention, then "Jane" alone in quoted speech),
   create a SEPARATE entry for EACH verbatim form so every occurrence is captured.
   Example: one entry with text "Jane Smith", a second with text "Jane" (if "Jane" appears alone).
+• A first name used alone (e.g. "Sandra", "Brian", "Karen") IS a THIRD_PARTY_IDENTIFIER
+  if it refers to a private individual — do not skip it just because a surname is absent.
 
 Output this JSON and nothing else:
 {{
@@ -2942,8 +2956,20 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
 
         today    = datetime.date.today().strftime("%Y%m%d")
         safe_ref = re.sub(r"[^\w\-]", "_", sar_ref or "SAR")
+        # Include patient name in filename so the output is clearly identified.
+        # Use the entered patient name; fall back to auto-detection from the first file.
+        _fname_patient = patient_name.strip()
+        if not _fname_patient and analyses:
+            _first_fname = analyses[0].get("filename", "")
+            _first_text  = analyses[0].get("text", "")
+            _fname_patient = _detect_patient_name(_first_fname, _first_text)
+        safe_pname = re.sub(r"[^\w\-]", "_", _fname_patient) if _fname_patient else ""
+        if safe_pname:
+            _fname_core = f"{today}_{safe_pname}_REDACTED_BUNDLE.pdf"
+        else:
+            _fname_core = f"{today}_{safe_ref}_REDACTED_BUNDLE.pdf"
         st.session_state.bundle_bytes  = buf.getvalue()
-        st.session_state.bundle_fname  = f"{today}_{safe_ref}_REDACTED_BUNDLE.pdf"
+        st.session_state.bundle_fname  = _fname_core
         st.session_state.proc_summary  = [
             {
                 "File":       p["filename"],
