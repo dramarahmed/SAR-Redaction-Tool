@@ -36,7 +36,65 @@ if not exist "%PYTHON%" (
 
 :: ── Ensure base Python DLL is findable (needed when launched via shortcut) ───
 for /f "tokens=1,2,*" %%A in ('findstr /i "^home" "%~dp0venv\pyvenv.cfg" 2^>nul') do set "PYTHON_HOME=%%C"
-if defined PYTHON_HOME if exist "%PYTHON_HOME%\python.exe" set "PATH=%PYTHON_HOME%;%PATH%"
+if defined PYTHON_HOME set "PATH=%PYTHON_HOME%;%PATH%"
+
+:: ── Check venv is usable; self-repair if base Python is inaccessible ─────────
+"%PYTHON%" --version >nul 2>&1
+if errorlevel 1 (
+    echo  Venv base Python is inaccessible -- searching for a system Python to repair...
+    set "REPAIR_PYTHON="
+    :: Prefer system-wide paths (Program Files) accessible to all Windows users
+    for %%P in (
+        "%ProgramFiles%\Python313\python.exe"
+        "%ProgramFiles%\Python312\python.exe"
+        "%ProgramFiles%\Python311\python.exe"
+        "%ProgramFiles%\Python310\python.exe"
+        "C:\Python313\python.exe"
+        "C:\Python312\python.exe"
+    ) do (
+        if exist %%P (
+            if not defined REPAIR_PYTHON set "REPAIR_PYTHON=%%~P"
+        )
+    )
+    :: Try py launcher as fallback
+    if not defined REPAIR_PYTHON (
+        where py >nul 2>&1
+        if not errorlevel 1 (
+            for /f "delims=" %%P in ('py -3 -c "import sys; print(sys.executable)" 2^>nul') do (
+                if not defined REPAIR_PYTHON (
+                    echo "%%P" | findstr /i "WindowsApps" >nul 2>&1
+                    if errorlevel 1 set "REPAIR_PYTHON=%%P"
+                )
+            )
+        )
+    )
+    if not defined REPAIR_PYTHON (
+        echo.
+        echo  ERROR: No accessible Python found.
+        echo  Please re-run INSTALL.bat (right-click ^> Run as administrator^).
+        pause
+        exit /b 1
+    )
+    echo  Rebuilding environment with: %REPAIR_PYTHON%
+    if exist "%~dp0venv" rd /s /q "%~dp0venv" >nul 2>&1
+    "%REPAIR_PYTHON%" -m venv "%~dp0venv"
+    if errorlevel 1 (
+        echo  ERROR: Could not rebuild venv. Please re-run INSTALL.bat.
+        pause
+        exit /b 1
+    )
+    set "PYTHON=%~dp0venv\Scripts\python.exe"
+    echo  Installing packages...
+    "%PYTHON%" -m pip install --upgrade pip --quiet
+    "%PYTHON%" -m pip install -r "%~dp0requirements.txt"
+    if errorlevel 1 (
+        echo  ERROR: Package installation failed. Please re-run INSTALL.bat.
+        pause
+        exit /b 1
+    )
+    echo  Environment repaired successfully.
+    echo.
+)
 
 :: ── Install packages if streamlit is missing ─────────────────
 "%PYTHON%" -c "import streamlit" >nul 2>&1

@@ -59,21 +59,24 @@ if not errorlevel 1 (
     )
 )
 
-:: Fall back to known install locations (Python 3.10-3.13, user and system)
+:: Fall back to known install locations
+:: Check system-wide paths FIRST -- these are accessible to all Windows users.
+:: User-scoped paths (LOCALAPPDATA) are checked last because they are only
+:: accessible to the specific user who installed them.
 if not defined PYTHON_EXE (
     for %%P in (
-        "%LOCALAPPDATA%\Programs\Python\Python313\python.exe"
-        "%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
-        "%LOCALAPPDATA%\Programs\Python\Python311\python.exe"
-        "%LOCALAPPDATA%\Programs\Python\Python310\python.exe"
-        "C:\Python313\python.exe"
-        "C:\Python312\python.exe"
-        "C:\Python311\python.exe"
-        "C:\Python310\python.exe"
         "%ProgramFiles%\Python313\python.exe"
         "%ProgramFiles%\Python312\python.exe"
         "%ProgramFiles%\Python311\python.exe"
         "%ProgramFiles%\Python310\python.exe"
+        "C:\Python313\python.exe"
+        "C:\Python312\python.exe"
+        "C:\Python311\python.exe"
+        "C:\Python310\python.exe"
+        "%LOCALAPPDATA%\Programs\Python\Python313\python.exe"
+        "%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
+        "%LOCALAPPDATA%\Programs\Python\Python311\python.exe"
+        "%LOCALAPPDATA%\Programs\Python\Python310\python.exe"
     ) do (
         if exist %%P (
             if not defined PYTHON_EXE set "PYTHON_EXE=%%~P"
@@ -93,19 +96,22 @@ if not defined PYTHON_EXE (
         pause
         exit /b 1
     )
-    echo        Installing Python 3.12 via winget...
-    winget install --id Python.Python.3.12 -e --silent --accept-source-agreements --accept-package-agreements
+    echo        Installing Python 3.12 for all users via winget...
+    :: --scope machine  = installs to C:\Program Files\Python312 (all users)
+    :: --force          = installs even if a per-user version already exists
+    winget install --id Python.Python.3.12 -e --silent --scope machine --force --accept-source-agreements --accept-package-agreements
     if errorlevel 1 (
         echo.
         echo  ERROR: Could not install Python automatically.
-        echo  Please install Python 3.10 or later from https://python.org
-        echo  Tick "Add Python to PATH" during installation, then re-run this script.
+        echo  Please install Python 3.12 from https://python.org
+        echo  On the installer, tick "Install for all users" and "Add Python to PATH",
+        echo  then re-run this script.
         pause
         exit /b 1
     )
-    :: Add expected paths to this session so re-detection can find it
-    set "PATH=%LOCALAPPDATA%\Programs\Python\Python312;%LOCALAPPDATA%\Programs\Python\Python312\Scripts;%PATH%"
-    :: Re-detect (winget registers py launcher so try that first)
+    :: Add both machine-scope and user-scope paths for this session
+    set "PATH=%ProgramFiles%\Python312;%ProgramFiles%\Python312\Scripts;%LOCALAPPDATA%\Programs\Python\Python312;%LOCALAPPDATA%\Programs\Python\Python312\Scripts;%PATH%"
+    :: Re-detect -- prefer machine-scope (Program Files) over user-scope
     where py >nul 2>&1
     if not errorlevel 1 (
         for /f "delims=" %%P in ('py -3 -c "import sys; print(sys.executable)" 2^>nul') do (
@@ -114,9 +120,10 @@ if not defined PYTHON_EXE (
     )
     if not defined PYTHON_EXE (
         for %%P in (
+            "%ProgramFiles%\Python312\python.exe"
+            "%ProgramFiles%\Python313\python.exe"
             "%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
             "%LOCALAPPDATA%\Programs\Python\Python313\python.exe"
-            "%ProgramFiles%\Python312\python.exe"
         ) do (
             if exist %%P (
                 if not defined PYTHON_EXE set "PYTHON_EXE=%%~P"
@@ -234,6 +241,15 @@ echo.
 ::  Step 4: Python virtual environment + packages
 :: =============================================================
 echo  [4/6] Setting up Python packages...
+:: If the venv exists but its base Python is inaccessible (e.g. installed for
+:: a different Windows user), delete it so we can rebuild with the correct Python.
+if exist "%~dp0venv\Scripts\python.exe" (
+    "%~dp0venv\Scripts\python.exe" --version >nul 2>&1
+    if errorlevel 1 (
+        echo        Existing venv is broken (base Python not accessible^) -- rebuilding...
+        rd /s /q "%~dp0venv" >nul 2>&1
+    )
+)
 if not exist "%~dp0venv\Scripts\python.exe" (
     "%PYTHON_EXE%" -m venv "%~dp0venv"
     if errorlevel 1 (
