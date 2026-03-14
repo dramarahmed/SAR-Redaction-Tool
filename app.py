@@ -228,6 +228,39 @@ class _FileWrapper:
         return self._data
 
 
+def _detect_patient_name(filename: str, text: str = "") -> str:
+    """
+    Try to detect the patient's full name from:
+      1. NHS EPR filename convention: '…SURNAME, Firstname (Title) NHSnum date.ext'
+      2. Common document header patterns: 'Patient: Ms Firstname SURNAME'
+
+    Returns 'Firstname Surname' (title-cased) or empty string if not found.
+    Used as a fallback when the operator has not typed the patient name in the sidebar.
+    """
+    # ── 1. Filename pattern ──────────────────────────────────────────────────
+    # Typical: '2022-09-14_hash_Description SURNAME, Firstname (Ms) 1000 …'
+    m = re.search(
+        r'\b([A-Z]{2,}),\s+([A-Za-z][a-z]+)\s+\((?:Mr|Mrs|Ms|Miss|Dr|Prof)',
+        filename,
+    )
+    if m:
+        return f"{m.group(2)} {m.group(1).title()}"
+
+    # ── 2. Document text header ──────────────────────────────────────────────
+    if text:
+        sample = text[:2000]
+        for pat in (
+            r'Patient:\s+(?:Mr|Mrs|Ms|Miss|Dr|Prof)\.?\s+([A-Za-z][a-z]+)\s+([A-Z][A-Za-z]+)',
+            r'Patient:\s+([A-Za-z][a-z]+)\s+([A-Z]{2,})',
+            r'Name:\s+(?:Mr|Mrs|Ms|Miss|Dr|Prof)\.?\s+([A-Za-z][a-z]+)\s+([A-Z][A-Za-z]+)',
+        ):
+            m = re.search(pat, sample)
+            if m:
+                return f"{m.group(1)} {m.group(2).title()}"
+
+    return ""
+
+
 _SUPPORTED_EXTS = {"pdf", "docx", "doc", "tiff", "tif", "rtf", "txt"}
 
 
@@ -736,8 +769,13 @@ CONFIDENTIAL_DISCLOSURE  — information given in confidence or anonymously by a
                            (ICO guidance: the identity of the third party may be withheld).
 OTHER_PATIENT_DATA       — data clearly belonging to a different patient: misfiled notes,
                            wrong-patient test results, clinic lists showing other patients.
-AGENCY_CONFIDENTIAL_INFO — content of a social work, police, probation or school report
-                           that names or identifies a third party.
+AGENCY_CONFIDENTIAL_INFO — (a) the name and direct contact details of any social worker,
+                           police officer, housing officer, probation officer or school
+                           staff member named in their professional capacity in a referral
+                           or report — they work for a DIFFERENT data controller and their
+                           personal work details are not the patient's data to receive;
+                           (b) the substantive content of any social work, police, probation
+                           or school report that names or identifies a third party.
 INDIRECT_IDENTIFIER      — text that would identify a private third party without naming
                            them (e.g. "your son at St Peter's Primary", "the neighbour at
                            No. 14", "your partner who works at the council").
@@ -932,8 +970,10 @@ def llm_analyse_document(
         all_proposed.extend(result.get("proposed_redactions", []))
         all_escalations.extend(result.get("escalations", []))
 
-    # Expand multi-word name redactions to catch first-name-only mentions
-    all_proposed = _expand_name_redactions(all_proposed, text)
+    # Expand multi-word name redactions to catch first-name-only mentions.
+    # Pass patient_name so the expander never creates a redaction target that
+    # matches the patient's own name parts (e.g. a shared family surname).
+    all_proposed = _expand_name_redactions(all_proposed, text, patient_name)
 
     return {
         "proposed_redactions": all_proposed,
@@ -1184,7 +1224,7 @@ def ingest_file(uploaded_file) -> tuple:
 # Post-processing: expand name redactions to catch first-name-only occurrences
 # =============================================================================
 
-def _expand_name_redactions(proposed: list, text: str) -> list:
+def _expand_name_redactions(proposed: list, text: str, patient_name: str = "") -> list:
     """
     For each THIRD_PARTY_IDENTIFIER redaction that looks like a full name
     (two or more words), extract each component word and add a separate
@@ -1193,9 +1233,22 @@ def _expand_name_redactions(proposed: list, text: str) -> list:
 
     This catches cases like: LLM flags "Michelle Granger" but the document
     later refers to her as just "Michelle" in quoted speech.
+
+    patient_name: the subject of the SAR — name parts matching the patient's
+    own name are never added as new redaction targets.
     """
     if not text:
         return proposed
+
+    # Build a set of the patient's own name tokens to protect from over-redaction.
+    # This prevents e.g. "Sampledata" (shared surname with a family member)
+    # being expanded into a redaction that would erase the patient's own header lines.
+    _pn_tokens: set[str] = set()
+    if patient_name.strip():
+        for tok in patient_name.strip().lower().split():
+            clean_tok = tok.strip(".,;:()[]'\"–—-")
+            if len(clean_tok) >= 3:
+                _pn_tokens.add(clean_tok)
 
     existing_lower = {(r.get("text") or "").strip().lower() for r in proposed}
     extra = []
@@ -1215,6 +1268,8 @@ def _expand_name_redactions(proposed: list, text: str) -> list:
                 continue   # skip initials / very short tokens
             if clean.lower() in existing_lower:
                 continue   # already being redacted
+            if clean.lower() in _pn_tokens:
+                continue   # part of patient's own name — never redact
 
             # Word-boundary search for standalone occurrence
             pattern = r'(?<!\w)' + re.escape(clean) + r'(?!\w)'
@@ -2243,13 +2298,22 @@ if tool_mode == "sar" and st.session_state.stage == "upload":
             _summary.append(f"{_zip_count} ZIP(s) will be extracted")
         st.info("**Ready:** " + "  ·  ".join(_summary))
 
-        if not patient_name.strip():
-            st.warning(
-                "⚠️ No patient name entered in the sidebar. "
-                "Enter the patient's full name so the LLM knows not to redact it."
+        _pname_missing = not patient_name.strip()
+        if _pname_missing:
+            st.error(
+                "⚠️ **Patient name is required before analysis can begin.** "
+                "Without it the tool cannot reliably distinguish the patient's own data from "
+                "third-party data — the patient's surname will be redacted wherever a family "
+                "member shares it. Enter the patient's full name in "
+                "**SAR Details → Patient full name** in the sidebar."
             )
 
-        if st.button("Analyse Documents", type="primary", use_container_width=True):
+        if st.button(
+            "Analyse Documents",
+            type="primary",
+            use_container_width=True,
+            disabled=_pname_missing,
+        ):
             # Show UI immediately so the user knows something is happening
             prog   = st.progress(0.0, text="⏳ Preparing files…")
             status = st.empty()
@@ -2335,6 +2399,20 @@ if tool_mode == "sar" and st.session_state.stage == "upload":
                 escalations  = []
 
                 if has_text:
+                    # ── Resolve effective patient name ────────────────────────
+                    # Use the operator-entered name if available; otherwise try to
+                    # auto-detect it from the filename or document header so the LLM
+                    # and name-expansion filter know whose data must NOT be redacted.
+                    effective_pname = patient_name.strip()
+                    if not effective_pname:
+                        effective_pname = _detect_patient_name(ufile.name, text)
+                        if effective_pname:
+                            status.info(
+                                f"🔍 **Patient name auto-detected** from filename/header: "
+                                f"**{effective_pname}** — will be protected from redaction. "
+                                f"Enter the name in the sidebar to suppress this message."
+                            )
+
                     if not _model_warm_shown:
                         status.info(
                             f"🤖 **Analysing** `{ufile.name}`…  \n"
@@ -2345,7 +2423,7 @@ if tool_mode == "sar" and st.session_state.stage == "upload":
                     else:
                         status.markdown(f"🤖 **Analysing** `{ufile.name}` for SAR redactions…")
                     result, llm_raw = llm_analyse_document(
-                        text, selected_model, patient_name,
+                        text, selected_model, effective_pname,
                         status_cb=lambda msg: status.markdown(f"🤖 **`{ufile.name}`** — {msg}"),
                         extra_redactions=extra_terms,
                         custom_instructions=custom_instructions,
@@ -2364,13 +2442,18 @@ if tool_mode == "sar" and st.session_state.stage == "upload":
                             seen.add(t)
                             proposed.append(item)
 
-                    # Remove any item that matches the patient's own name
-                    if patient_name.strip():
-                        pn_lower = patient_name.strip().lower()
+                    # Remove any item that matches the patient's own name or any
+                    # individual token within it (prevents shared surnames being redacted).
+                    if effective_pname:
+                        pn_lower   = effective_pname.lower()
+                        pn_tokens  = {
+                            tok.lower() for tok in pn_lower.split() if len(tok) >= 3
+                        }
                         proposed = [
                             p for p in proposed
                             if pn_lower not in p["text"].lower()
                             and p["text"].lower() not in pn_lower
+                            and p["text"].lower() not in pn_tokens
                         ]
                         escalations = [
                             e for e in escalations
