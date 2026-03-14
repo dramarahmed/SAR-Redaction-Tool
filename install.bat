@@ -166,7 +166,7 @@ if not exist "%~dp0venv\Scripts\python.exe" (
 )
 echo        Installing / updating packages (this may take a few minutes)...
 "%~dp0venv\Scripts\python.exe" -m pip install --upgrade pip --quiet
-"%~dp0venv\Scripts\pip.exe" install -r "%~dp0requirements.txt"
+"%~dp0venv\Scripts\python.exe" -m pip install -r "%~dp0requirements.txt"
 if errorlevel 1 (
     echo.
     echo  ERROR: Package installation failed.  Check your internet connection.
@@ -214,14 +214,7 @@ echo.
 ::  Step 6: Desktop shortcut
 :: =============================================================
 echo  [6/6] Creating desktop shortcut...
-powershell -NoProfile -Command ^
-    "$ws = New-Object -ComObject WScript.Shell; ^
-     $lnk = $ws.CreateShortcut([Environment]::GetFolderPath('Desktop') + '\SAR Redaction Tool.lnk'); ^
-     $lnk.TargetPath = '%~dp0run.bat'; ^
-     $lnk.WorkingDirectory = '%~dp0'; ^
-     $lnk.IconLocation = 'shell32.dll,23'; ^
-     $lnk.Description = 'SAR Redaction Tool'; ^
-     $lnk.Save()"
+powershell -NoProfile -Command "$ws = New-Object -ComObject WScript.Shell; $lnk = $ws.CreateShortcut([Environment]::GetFolderPath('Desktop') + '\SAR Redaction Tool.lnk'); $lnk.TargetPath = '%~dp0run.bat'; $lnk.WorkingDirectory = '%~dp0'; $lnk.IconLocation = 'shell32.dll,23'; $lnk.Description = 'SAR Redaction Tool'; $lnk.Save()"
 echo        Shortcut created on Desktop.
 echo.
 

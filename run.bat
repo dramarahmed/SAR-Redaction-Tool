@@ -30,12 +30,16 @@ if not exist "%PYTHON%" (
     exit /b 1
 )
 
+:: ── Ensure base Python DLL is findable (needed when launched via shortcut) ───
+for /f "tokens=1,2,*" %%A in ('findstr /i "^home" "%~dp0venv\pyvenv.cfg" 2^>nul') do set "PYTHON_HOME=%%C"
+if defined PYTHON_HOME if exist "%PYTHON_HOME%\python.exe" set "PATH=%PYTHON_HOME%;%PATH%"
+
 :: ── Install packages if streamlit is missing ─────────────────
 "%PYTHON%" -c "import streamlit" >nul 2>&1
 if errorlevel 1 (
     echo  Installing packages into venv...
-    "%~dp0venv\Scripts\pip.exe" install --upgrade pip --quiet
-    "%~dp0venv\Scripts\pip.exe" install -r "%~dp0requirements.txt"
+    "%PYTHON%" -m pip install --upgrade pip --quiet
+    "%PYTHON%" -m pip install -r "%~dp0requirements.txt"
     if errorlevel 1 (
         echo  ERROR: Package installation failed.
         pause
