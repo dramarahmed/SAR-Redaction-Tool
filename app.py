@@ -781,8 +781,13 @@ DPA_SCHEDULE3_EXEMPTION     — content that may engage a Sch.3 DPA 2018 exempti
 
 ━━━ OUTPUT RULES ━━━
 • "text": copy EXACTLY as it appears — character for character, minimum span only.
-• "replacement": for auto-redactions only; use the format [REDACTED — reason].
+• "replacement": for auto-redactions only; use the format [REDACTED - reason].
+  Use a plain hyphen (-), not an em-dash or any other character.
 • Never include the patient's own name in any "text" field.
+• For THIRD_PARTY_IDENTIFIER: if a third party's name appears in MORE THAN ONE FORM in this
+  document (e.g. full name "Jane Smith" at first mention, then "Jane" alone in quoted speech),
+  create a SEPARATE entry for EACH verbatim form so every occurrence is captured.
+  Example: one entry with text "Jane Smith", a second with text "Jane" (if "Jane" appears alone).
 
 Output this JSON and nothing else:
 {{
@@ -791,7 +796,7 @@ Output this JSON and nothing else:
       "text": "exact verbatim text from the document",
       "tag": "THIRD_PARTY_IDENTIFIER",
       "reason": "Brief explanation (one sentence)",
-      "replacement": "[REDACTED — third-party personal data]",
+      "replacement": "[REDACTED - third-party personal data]",
       "context": "Up to 30 words of surrounding context"
     }}
   ],
@@ -926,6 +931,9 @@ def llm_analyse_document(
             parse_ok = False
         all_proposed.extend(result.get("proposed_redactions", []))
         all_escalations.extend(result.get("escalations", []))
+
+    # Expand multi-word name redactions to catch first-name-only mentions
+    all_proposed = _expand_name_redactions(all_proposed, text)
 
     return {
         "proposed_redactions": all_proposed,
@@ -1173,6 +1181,73 @@ def ingest_file(uploaded_file) -> tuple:
 
 
 # =============================================================================
+# Post-processing: expand name redactions to catch first-name-only occurrences
+# =============================================================================
+
+def _expand_name_redactions(proposed: list, text: str) -> list:
+    """
+    For each THIRD_PARTY_IDENTIFIER redaction that looks like a full name
+    (two or more words), extract each component word and add a separate
+    redaction entry for any that appear STANDALONE elsewhere in the document
+    (i.e. outside the immediate context of the full name).
+
+    This catches cases like: LLM flags "Michelle Granger" but the document
+    later refers to her as just "Michelle" in quoted speech.
+    """
+    if not text:
+        return proposed
+
+    existing_lower = {(r.get("text") or "").strip().lower() for r in proposed}
+    extra = []
+
+    for item in proposed:
+        if item.get("tag") != "THIRD_PARTY_IDENTIFIER":
+            continue
+        raw = (item.get("text") or "").strip()
+        parts = raw.split()
+        if len(parts) < 2:
+            continue   # already a single word — nothing to expand
+
+        for part in parts:
+            # Strip common punctuation that can attach to a name in free text
+            clean = part.strip(".,;:()[]'\"–—-")
+            if len(clean) < 3:
+                continue   # skip initials / very short tokens
+            if clean.lower() in existing_lower:
+                continue   # already being redacted
+
+            # Word-boundary search for standalone occurrence
+            pattern = r'(?<!\w)' + re.escape(clean) + r'(?!\w)'
+            matches = list(re.finditer(pattern, text, re.IGNORECASE))
+            if not matches:
+                continue
+
+            # At least one occurrence must be OUTSIDE the span of the full name
+            standalone = False
+            for m in matches:
+                # Build the surrounding window and check full name isn't there
+                window_start = max(0, m.start() - len(raw) - 5)
+                window_end   = min(len(text), m.end() + len(raw) + 5)
+                window       = text[window_start:window_end]
+                if raw.lower() not in window.lower():
+                    standalone = True
+                    break
+
+            if standalone:
+                extra.append({
+                    "text":        clean,
+                    "tag":         "THIRD_PARTY_IDENTIFIER",
+                    "reason":      f"Standalone name-part of third party (expanded from \"{raw}\")",
+                    "replacement": "[REDACTED - third-party personal data]",
+                    "context":     item.get("context", ""),
+                    "approved":    True,
+                })
+                existing_lower.add(clean.lower())
+
+    return proposed + extra
+
+
+# =============================================================================
 # Apply approved redactions
 # =============================================================================
 
@@ -1225,32 +1300,78 @@ def _find_text_on_page(page, needle: str) -> list:
     return []
 
 
+def _rects_overlap(r1: fitz.Rect, r2: fitz.Rect, threshold: float = 0.4) -> bool:
+    """Return True if r1 and r2 overlap by more than threshold of the smaller rect's area."""
+    ix0 = max(r1.x0, r2.x0)
+    iy0 = max(r1.y0, r2.y0)
+    ix1 = min(r1.x1, r2.x1)
+    iy1 = min(r1.y1, r2.y1)
+    if ix0 >= ix1 or iy0 >= iy1:
+        return False
+    inter = (ix1 - ix0) * (iy1 - iy0)
+    a1    = max((r1.x1 - r1.x0) * (r1.y1 - r1.y0), 1e-6)
+    a2    = max((r2.x1 - r2.x0) * (r2.y1 - r2.y0), 1e-6)
+    return inter / min(a1, a2) > threshold
+
+
+def _sanitise_replacement(text: str) -> str:
+    """Replace characters unsupported by PDF built-in Helvetica with safe equivalents."""
+    return (
+        text
+        .replace("\u2014", "-")   # em-dash → hyphen
+        .replace("\u2013", "-")   # en-dash → hyphen
+        .replace("\u2018", "'")   # left single quote
+        .replace("\u2019", "'")   # right single quote
+        .replace("\u201c", '"')   # left double quote
+        .replace("\u201d", '"')   # right double quote
+    )
+
+
 def apply_approved_redactions(doc: fitz.Document, approved_items: list) -> tuple:
-    """Black-box all approved strings. Returns (modified_doc, redaction_count)."""
+    """
+    Black-box all approved strings. Returns (modified_doc, redaction_count).
+
+    Improvements over naïve approach:
+    - Sanitises replacement text (em-dashes etc.) for Helvetica compatibility.
+    - Deduplicates overlapping rects before adding annotations so two redactions
+      covering the same span don't interleave their replacement text labels.
+    """
     # apply_redactions() requires a PDF; convert if necessary (e.g. TIFF opened directly)
     if not doc.is_pdf:
         doc = fitz.open("pdf", doc.convert_to_pdf())
+
     count  = 0
     unique = {}
     for item in approved_items:
         t = (item.get("text") or "").strip()
         if t and len(t) >= 2:
-            unique[t] = item.get("replacement", "[REDACTED]")
+            raw_repl = item.get("replacement", "[REDACTED]")
+            unique[t] = _sanitise_replacement(raw_repl)
 
     for page in doc:
+        # Collect all (rect, replacement) pairs for this page first so we can
+        # deduplicate overlapping rects before calling add_redact_annot.
+        pending: list[tuple[fitz.Rect, str]] = []
         for s, replacement in unique.items():
             for rect in _find_text_on_page(page, s):
-                try:
-                    page.add_redact_annot(
-                        rect,
-                        text=replacement,
-                        fontname="helv",
-                        fontsize=5,
-                        fill=(0.85, 0.85, 0.85),
-                    )
-                except Exception:
-                    page.add_redact_annot(rect, fill=(0, 0, 0))
-                count += 1
+                # Skip if this rect significantly overlaps one already queued
+                overlaps = any(_rects_overlap(rect, existing_r) for existing_r, _ in pending)
+                if not overlaps:
+                    pending.append((rect, replacement))
+
+        for rect, replacement in pending:
+            try:
+                page.add_redact_annot(
+                    rect,
+                    text=replacement,
+                    fontname="helv",
+                    fontsize=5,
+                    fill=(0.85, 0.85, 0.85),
+                )
+            except Exception:
+                page.add_redact_annot(rect, fill=(0, 0, 0))
+            count += 1
+
         page.apply_redactions()
 
     return doc, count
