@@ -788,6 +788,10 @@ AGENCY_CONFIDENTIAL_INFO — (a) the name and direct contact details of any soci
                            personal work details are not the patient's data to receive;
                            (b) the substantive content of any social work, police, probation
                            or school report that names or identifies a third party.
+                           Always create SEPARATE entries for the name and the phone
+                           number — never bundle them. If you find a phone number for an
+                           agency professional, you MUST also create a separate entry for
+                           their name, and vice versa.
 INDIRECT_IDENTIFIER      — text that would identify a private third party without naming
                            them (e.g. "your son at St Peter's Primary", "the neighbour at
                            No. 14", "your partner who works at the council").
@@ -799,13 +803,21 @@ CLINICIAN_CONTEXT_AMBIGUOUS — a clinician name appearing in an ambiguous or no
                               context: named as a patient in this record, named as the subject
                               of or complainant in a formal complaint or investigation, or
                               where their role is unclear (locum/agency with no stated role).
+                              IMPORTANT: Documents headed 'Formal Complaint', 'Record of
+                              Complaint Received', 'Patient Complaint' or similar MUST have
+                              any clinician named as the SUBJECT of the complaint escalated
+                              under this tag — even if their name also appears elsewhere in
+                              the document in a professional capacity.
 SAFEGUARDING_RISK           — safeguarding referrals, MARAC discussions, CP concerns,
                               LAC / MASH referrals. Releasing or withholding requires
                               a qualified decision; neither is automatic.
 DOMESTIC_ABUSE_CONTEXT      — domestic abuse or coercive control disclosures, DASH risk
                               assessment results, MARAC referral details.
-CHILD_PROTECTION            — CP plans, Section 47 or Section 17 enquiries,
-                              CP conferences, LADO referrals.
+CHILD_PROTECTION            — the SUBSTANCE of CP referrals: CP plans, Section 47 or
+                              Section 17 enquiry details, CP conferences, LADO referral
+                              content. Do NOT use this tag for the child's name or DOB —
+                              those are THIRD_PARTY_IDENTIFIER (auto-redact). Only the
+                              risk assessment content and referral narrative is escalated.
 SERIOUS_HARM_RISK           — content that could cause SERIOUS physical or mental harm if
                               disclosed (DPA 2018 Sch.3 para.5). Applies to ACUTE, ACTIVE
                               risk only: credible imminent suicide or self-harm risk,
@@ -840,6 +852,14 @@ DPA_SCHEDULE3_EXEMPTION     — content that may engage a Sch.3 DPA 2018 exempti
   Example: one entry with text "Jane Smith", a second with text "Jane" (if "Jane" appears alone).
 • A first name used alone (e.g. "Sandra", "Brian", "Karen") IS a THIRD_PARTY_IDENTIFIER
   if it refers to a private individual — do not skip it just because a surname is absent.
+• Named children appearing in safeguarding or CP referrals are THIRD_PARTY_IDENTIFIER —
+  auto-redact their name and DOB as separate entries. The CP referral substance is what
+  requires CHILD_PROTECTION escalation, not the child's name itself.
+  Always capture just the child's name as the minimum span (e.g. text: "Lily"), and
+  their approximate DOB as a second separate entry (e.g. text: "2019" or "approximately
+  2019") — never bundle the name and description into one long text string.
+• Escalation and auto-redaction are MUTUALLY EXCLUSIVE. If a passage is listed in
+  "escalations" it MUST NOT also appear in "proposed_redactions". Never double-list.
 
 Output this JSON and nothing else:
 {{
@@ -984,10 +1004,24 @@ def llm_analyse_document(
         all_proposed.extend(result.get("proposed_redactions", []))
         all_escalations.extend(result.get("escalations", []))
 
+    # ── Post-processing: mutual exclusivity of escalation and auto-redaction ──
+    # The LLM sometimes places the same text in both proposed_redactions and
+    # escalations, or uses an escalation-only tag in proposed_redactions.
+    # In both cases the item should be reviewed by a human, not auto-redacted.
+    _escalate_tags = {tag for tag, info in REDACTION_TAGS.items()
+                      if info.get("action") == "escalate"}
+    _esc_texts = {(e.get("text") or "").strip().lower() for e in all_escalations}
+    all_proposed = [
+        p for p in all_proposed
+        if p.get("tag", "") not in _escalate_tags          # wrong tag for auto-redact
+        and (p.get("text") or "").strip().lower() not in _esc_texts  # also in escalations
+    ]
+
     # Expand multi-word name redactions to catch first-name-only mentions.
     # Pass patient_name so the expander never creates a redaction target that
     # matches the patient's own name parts (e.g. a shared family surname).
     all_proposed = _expand_name_redactions(all_proposed, text, patient_name)
+    all_proposed = _expand_agency_contacts(all_proposed, text)
 
     return {
         "proposed_redactions": all_proposed,
@@ -1264,6 +1298,19 @@ def _expand_name_redactions(proposed: list, text: str, patient_name: str = "") -
             if len(clean_tok) >= 3:
                 _pn_tokens.add(clean_tok)
 
+    # Common English words that are never proper name tokens.
+    _STOPWORDS = {
+        "the", "a", "an", "of", "at", "on", "in", "to", "for", "from", "with",
+        "who", "what", "where", "when", "how", "that", "this", "and", "or",
+        "but", "not", "no", "is", "was", "are", "were", "be", "been", "has",
+        "have", "had", "do", "does", "did", "will", "would", "can", "could",
+        "may", "might", "she", "he", "her", "his", "their", "they", "our",
+        "runs", "post", "lives", "works", "near", "next", "door", "road",
+        "street", "lane", "avenue", "close", "drive", "house", "flat", "office",
+        "woman", "man", "lady", "person", "child", "boy", "girl", "family",
+        "local", "nearby", "down",
+    }
+
     existing_lower = {(r.get("text") or "").strip().lower() for r in proposed}
     extra = []
 
@@ -1275,6 +1322,10 @@ def _expand_name_redactions(proposed: list, text: str, patient_name: str = "") -
         if len(parts) < 2:
             continue   # already a single word — nothing to expand
 
+        # Only expand strings that look like proper names: every significant word
+        # must start with an uppercase letter and not be a stopword.
+        # This prevents "the woman who runs the post office" being split into
+        # individual common words that would corrupt the document.
         for part in parts:
             # Strip common punctuation that can attach to a name in free text
             clean = part.strip(".,;:()[]'\"–—-")
@@ -1284,6 +1335,11 @@ def _expand_name_redactions(proposed: list, text: str, patient_name: str = "") -
                 continue   # already being redacted
             if clean.lower() in _pn_tokens:
                 continue   # part of patient's own name — never redact
+
+            # Only expand parts that look like proper name tokens:
+            # must start with uppercase and not be a generic English word
+            if not (len(clean) >= 3 and clean[0].isupper() and clean.lower() not in _STOPWORDS):
+                continue   # not a proper name token — skip this part
 
             # Word-boundary search for standalone occurrence
             pattern = r'(?<!\w)' + re.escape(clean) + r'(?!\w)'
@@ -1312,6 +1368,85 @@ def _expand_name_redactions(proposed: list, text: str, patient_name: str = "") -
                     "approved":    True,
                 })
                 existing_lower.add(clean.lower())
+
+    return proposed + extra
+
+
+# =============================================================================
+# Post-processing: expand agency contacts to catch paired name/phone
+# =============================================================================
+
+def _expand_agency_contacts(proposed: list, text: str) -> list:
+    """
+    When an AGENCY_CONFIDENTIAL_INFO or THIRD_PARTY_IDENTIFIER proposed redaction
+    contains a phone number but the adjacent name was missed (or vice versa), try to
+    locate the missing counterpart in the surrounding text and add it.
+
+    Handles structured blocks like:
+        Social worker: Diane Okafor
+        Direct line: 01925 000055
+    where the LLM may catch one field but not the other.
+    """
+    import re as _re
+
+    _PHONE_PAT = _re.compile(
+        r'\b(\d{5}\s\d{6}|\d{4}\s\d{3}\s\d{4}|\d{11}|\+44[\s\d]{10,13})\b'
+    )
+    _NAME_PAT = _re.compile(
+        r'\b([A-Z][a-z]{1,}(?:\s+[A-Z][a-z]{1,})+)\b'
+    )
+    _AGENCY_TAGS = {"AGENCY_CONFIDENTIAL_INFO", "THIRD_PARTY_IDENTIFIER"}
+
+    existing_lower = {(r.get("text") or "").strip().lower() for r in proposed}
+    lines = text.splitlines()
+    extra = []
+
+    for item in proposed:
+        if item.get("tag") not in _AGENCY_TAGS:
+            continue
+        item_text = (item.get("text") or "").strip()
+
+        # Case A: item is a phone number → look for adjacent name
+        if _PHONE_PAT.fullmatch(item_text.replace(" ", "")):
+            # Find the line containing this phone number
+            for li, line in enumerate(lines):
+                if item_text in line:
+                    # Search ±3 lines for a name pattern
+                    window = lines[max(0, li - 3): li + 4]
+                    for wline in window:
+                        for m in _NAME_PAT.finditer(wline):
+                            candidate = m.group(1)
+                            if candidate.lower() not in existing_lower:
+                                extra.append({
+                                    "text":        candidate,
+                                    "tag":         item.get("tag"),
+                                    "reason":      f"Name associated with agency contact (paired with {item_text})",
+                                    "replacement": "[REDACTED - agency contact]",
+                                    "context":     wline.strip(),
+                                    "approved":    True,
+                                })
+                                existing_lower.add(candidate.lower())
+                    break
+
+        # Case B: item is a name → look for adjacent phone numbers
+        elif _NAME_PAT.fullmatch(item_text):
+            for li, line in enumerate(lines):
+                if item_text in line:
+                    window = lines[max(0, li - 3): li + 4]
+                    for wline in window:
+                        for m in _PHONE_PAT.finditer(wline):
+                            candidate = m.group(0)
+                            if candidate.lower() not in existing_lower:
+                                extra.append({
+                                    "text":        candidate,
+                                    "tag":         item.get("tag"),
+                                    "reason":      f"Phone associated with agency contact (paired with {item_text})",
+                                    "replacement": "[REDACTED - agency contact]",
+                                    "context":     wline.strip(),
+                                    "approved":    True,
+                                })
+                                existing_lower.add(candidate.lower())
+                    break
 
     return proposed + extra
 

@@ -1,0 +1,527 @@
+{
+  "run_timestamp": "2026-03-14T19:52:37.328457+00:00",
+  "model": "qwen2.5:14b",
+  "patients": [
+    {
+      "zip": "Test-Alice-SHARESURNAME-v2.zip",
+      "patient_name": "Alice SHARESURNAME",
+      "documents": [
+        {
+          "filename": "01_GP_Consultation_Domestic_Disclosure.txt",
+          "proposed_redactions": [
+            {
+              "text": "Roger SHARESURNAME",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Identifies the patient's husband.",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "Sandra",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Identifies a neighbour who witnessed domestic incidents.",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "Roger",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Standalone name-part of third party (expanded from \"Roger SHARESURNAME\")",
+              "replacement": "[REDACTED - third-party personal data]"
+            }
+          ],
+          "escalations": [
+            {
+              "text": "DASH risk assessment completed — score 18 out of 24 = HIGH RISK",
+              "tag": "DOMESTIC_ABUSE_CONTEXT",
+              "reason": "Indicates a high-risk DASH assessment."
+            },
+            {
+              "text": "Referral to MARAC initiated (see separate referral note)",
+              "tag": "DOMESTIC_ABUSE_CONTEXT",
+              "reason": "Indicates a referral to MARAC."
+            }
+          ],
+          "redacted_text": "HARTFIELD ROAD MEDICAL CENTRE\nGP CONSULTATION NOTE — CONFIDENTIAL\n\nDate: 14 March 2024\nClinician: Dr Priya Mehta (GP)\nPatient: Alice SHARESURNAME\nDOB: 15/06/1962\nNHS Number: 111 222 3333\nAddress: 47 Cartwright Avenue, Manchester M14 6PQ\n\nPresenting complaint:\nMrs SHARESURNAME attended today accompanied by her husband [REDACTED - third-party personal data]. The\nconsultation began as a routine review of her hypertension management. Mrs SHARESURNAME\nappeared anxious and repeatedly looked towards her husband before answering questions. I\nasked [REDACTED - third-party personal data] to wait in reception so that I could complete a brief NICE\ndomestic violence routine enquiry with the patient.\n\nDisclosure:\nWhen seen alone, Alice disclosed that [REDACTED - third-party personal data] has been controlling her access to finances\nfor approximately two years. She stated: \"He checks my phone every night and I'm not\nallowed to see anyone without him knowing.\" She described an incident last week in which\n[REDACTED - third-party personal data] pushed her against the kitchen wall following an argument about her attendance at\na church group. She said that her neighbour [REDACTED - third-party personal data] had witnessed shouting through the\nwall on two separate occasions and had expressed concern, but Alice asked [REDACTED - third-party personal data] not to\ncall the police as she was afraid of what [REDACTED - third-party personal data] might do.\n\nMental state: Distressed but coherent. No active suicidal ideation. Insight good.\nPhysical examination: No visible injuries today. Blood pressure 148/92 mmHg (elevated).\n\nClinical management:\n- Blood pressure medication dose increased: Amlodipine 10mg OD\n- Safety planning discussed and documented on EMIS under safeguarding flag\n- DASH risk assessment completed — score 18 out of 24 = HIGH RISK\n- Patient given domestic abuse helpline card concealed in medication information leaflet\n- Referral to MARAC initiated (see separate referral note)\n- Follow-up appointment booked for 4 weeks, coded as routine review\n\nAlice declined referral to IDVA today but was given written information. She confirmed\nshe has a safe mobile phone [REDACTED - third-party personal data] does not know about.\n\nSigned: Dr Priya Mehta, MRCGP\n",
+          "original_text": "HARTFIELD ROAD MEDICAL CENTRE\nGP CONSULTATION NOTE — CONFIDENTIAL\n\nDate: 14 March 2024\nClinician: Dr Priya Mehta (GP)\nPatient: Alice SHARESURNAME\nDOB: 15/06/1962\nNHS Number: 111 222 3333\nAddress: 47 Cartwright Avenue, Manchester M14 6PQ\n\nPresenting complaint:\nMrs SHARESURNAME attended today accompanied by her husband Roger SHARESURNAME. The\nconsultation began as a routine review of her hypertension management. Mrs SHARESURNAME\nappeared anxious and repeatedly looked towards her husband before answering questions. I\nasked Roger SHARESURNAME to wait in reception so that I could complete a brief NICE\ndomestic violence routine enquiry with the patient.\n\nDisclosure:\nWhen seen alone, Alice disclosed that Roger has been controlling her access to finances\nfor approximately two years. She stated: \"He checks my phone every night and I'm not\nallowed to see anyone without him knowing.\" She described an incident last week in which\nRoger pushed her against the kitchen wall following an argument about her attendance at\na church group. She said that her neighbour Sandra had witnessed shouting through the\nwall on two separate occasions and had expressed concern, but Alice asked Sandra not to\ncall the police as she was afraid of what Roger might do.\n\nMental state: Distressed but coherent. No active suicidal ideation. Insight good.\nPhysical examination: No visible injuries today. Blood pressure 148/92 mmHg (elevated).\n\nClinical management:\n- Blood pressure medication dose increased: Amlodipine 10mg OD\n- Safety planning discussed and documented on EMIS under safeguarding flag\n- DASH risk assessment completed — score 18 out of 24 = HIGH RISK\n- Patient given domestic abuse helpline card concealed in medication information leaflet\n- Referral to MARAC initiated (see separate referral note)\n- Follow-up appointment booked for 4 weeks, coded as routine review\n\nAlice declined referral to IDVA today but was given written information. She confirmed\nshe has a safe mobile phone Roger does not know about.\n\nSigned: Dr Priya Mehta, MRCGP\n",
+          "error": ""
+        },
+        {
+          "filename": "02_MARAC_Referral.txt",
+          "proposed_redactions": [
+            {
+              "text": "Roger SHARESURNAME",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Perpetrator's name is a third-party identifier.",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "03/11/1960",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Perpetrator's date of birth is a third-party identifier.",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "47 Cartwright Avenue, Manchester M14 6PQ",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Perpetrator's address is a third-party identifier.",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "07700 901234",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Perpetrator's telephone number is a third-party identifier.",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "a neighbour",
+              "tag": "INDIRECT_IDENTIFIER",
+              "reason": "Indirect identification of a witness through contextual description.",
+              "replacement": "[REDACTED - indirect identifier]"
+            },
+            {
+              "text": "Roger",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Standalone name-part of third party (expanded from \"Roger SHARESURNAME\")",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "Manchester",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Standalone name-part of third party (expanded from \"47 Cartwright Avenue, Manchester M14 6PQ\")",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "Cartwright Avenue",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Name associated with agency contact (paired with 07700 901234)",
+              "replacement": "[REDACTED - agency contact]"
+            }
+          ],
+          "escalations": [
+            {
+              "text": "Please convene MARAC panel with urgency given HIGH RISK designation.",
+              "tag": "SAFEGUARDING_RISK",
+              "reason": "MARAC referral for high-risk domestic abuse case."
+            }
+          ],
+          "redacted_text": "HARTFIELD ROAD MEDICAL CENTRE\nMARAC REFERRAL — STRICTLY CONFIDENTIAL\n\nDate: 14 March 2024\nReferring clinician: Dr Priya Mehta (GP)\nCompleted by: Practice safeguarding lead\n\nSUBJECT OF SAR (VICTIM):\nName: Alice SHARESURNAME\nDOB: 15/06/1962\nNHS Number: 111 222 3333\nAddress: [REDACTED - third-party personal data]\n\nPERPETRATOR DETAILS:\nName: [REDACTED - third-party personal data]\nDOB: [REDACTED - third-party personal data]\nRelationship to victim: Husband (co-habiting)\nAddress: [REDACTED - third-party personal data] (same address as victim)\nTelephone: [REDACTED - third-party personal data]\nOccupation: Self-employed (exact occupation unknown)\nKnown to police: Unknown at time of referral\n\nDASH RISK ASSESSMENT SUMMARY:\nTotal score: 18/24 — HIGH RISK\nRisk factors identified include: financial control, physical assault, isolation from\nsupport network, monitoring of communications, and escalating frequency of incidents\nover a 6-month period.\n\nNATURE OF RISK:\nThe perpetrator, [REDACTED - third-party personal data], has used a pattern of coercive and controlling\nbehaviour over an extended period. The most recent incident (approximately one week\nprior to this referral) involved physical violence. The victim has reported that [REDACTED - third-party personal data]\nhas threatened to harm himself if she leaves, which may be used as a further means of\ncontrol. There is a known third-party witness ([REDACTED - indirect identifier]) but the victim has\nrequested this individual not be approached directly.\n\nIMMEDIATE SAFETY MEASURES TAKEN:\n- Safety plan recorded in patient record\n- Emergency contact numbers provided\n- EMIS safeguarding alert flag activated\n- Patient aware of MARAC process and has consented to referral\n\nREQUESTED ACTION:\nPlease convene MARAC panel with urgency given HIGH RISK designation.\nAll agencies attending must ensure the perpetrator is NOT made aware of this referral.\n\nReferring practice: Hartfield Road Medical Centre, [REDACTED - third-party personal data]\nContact: Dr Priya Mehta via practice main line\n\nSigned: Dr Priya Mehta, MRCGP   Date: 14/03/2024\n",
+          "original_text": "HARTFIELD ROAD MEDICAL CENTRE\nMARAC REFERRAL — STRICTLY CONFIDENTIAL\n\nDate: 14 March 2024\nReferring clinician: Dr Priya Mehta (GP)\nCompleted by: Practice safeguarding lead\n\nSUBJECT OF SAR (VICTIM):\nName: Alice SHARESURNAME\nDOB: 15/06/1962\nNHS Number: 111 222 3333\nAddress: 47 Cartwright Avenue, Manchester M14 6PQ\n\nPERPETRATOR DETAILS:\nName: Roger SHARESURNAME\nDOB: 03/11/1960\nRelationship to victim: Husband (co-habiting)\nAddress: 47 Cartwright Avenue, Manchester M14 6PQ (same address as victim)\nTelephone: 07700 901234\nOccupation: Self-employed (exact occupation unknown)\nKnown to police: Unknown at time of referral\n\nDASH RISK ASSESSMENT SUMMARY:\nTotal score: 18/24 — HIGH RISK\nRisk factors identified include: financial control, physical assault, isolation from\nsupport network, monitoring of communications, and escalating frequency of incidents\nover a 6-month period.\n\nNATURE OF RISK:\nThe perpetrator, Roger SHARESURNAME, has used a pattern of coercive and controlling\nbehaviour over an extended period. The most recent incident (approximately one week\nprior to this referral) involved physical violence. The victim has reported that Roger\nhas threatened to harm himself if she leaves, which may be used as a further means of\ncontrol. There is a known third-party witness (a neighbour) but the victim has\nrequested this individual not be approached directly.\n\nIMMEDIATE SAFETY MEASURES TAKEN:\n- Safety plan recorded in patient record\n- Emergency contact numbers provided\n- EMIS safeguarding alert flag activated\n- Patient aware of MARAC process and has consented to referral\n\nREQUESTED ACTION:\nPlease convene MARAC panel with urgency given HIGH RISK designation.\nAll agencies attending must ensure the perpetrator is NOT made aware of this referral.\n\nReferring practice: Hartfield Road Medical Centre, Manchester\nContact: Dr Priya Mehta via practice main line\n\nSigned: Dr Priya Mehta, MRCGP   Date: 14/03/2024\n",
+          "error": ""
+        }
+      ],
+      "missed_redactions": [],
+      "over_redactions": [],
+      "escalation_hits": [],
+      "escalation_misses": [],
+      "pass": true
+    },
+    {
+      "zip": "Test-Beatrice-MULTITYPE-v2.zip",
+      "patient_name": "Beatrice MULTITYPE",
+      "documents": [
+        {
+          "filename": "01_GP_Consultation_DA_Disclosure.txt",
+          "proposed_redactions": [
+            {
+              "text": "Gerald MULTITYPE",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Identifies the patient's husband.",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "Sophie",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Identifies the patient's daughter.",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "the woman who runs the post office on Acacia Street",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Identifies an unnamed neighbour.",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "Gerald",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Standalone name-part of third party (expanded from \"Gerald MULTITYPE\")",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "Acacia",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Standalone name-part of third party (expanded from \"the woman who runs the post office on Acacia Street\")",
+              "replacement": "[REDACTED - third-party personal data]"
+            }
+          ],
+          "escalations": [
+            {
+              "text": "Sophie not to be contacted without patient consent; however, Beatrice indicated she would speak with Sophie herself",
+              "tag": "DOMESTIC_ABUSE_CONTEXT",
+              "reason": "Discloses domestic abuse context involving the patient's daughter."
+            },
+            {
+              "text": "DASH risk assessment: Score 14/24 — STANDARD RISK at present, but pattern suggests escalation may occur. Will monitor and re-assess",
+              "tag": "SAFEGUARDING_RISK",
+              "reason": "Involves a DASH risk assessment indicating potential for escalation."
+            }
+          ],
+          "redacted_text": "[REDACTED - third-party personal data] STREET FAMILY PRACTICE\nGP CONSULTATION NOTE — CONFIDENTIAL\n\nDate: 05 February 2024\nClinician: Dr Fatima Al-Rashid (GP)\nPatient: Beatrice MULTITYPE\nDOB: 19/11/1953\nNHS Number: 321 654 9870\nAddress: 22 Orchard Way, Chester CH4 8LQ\n\nPresenting complaint:\nMrs MULTITYPE attended complaining of a painful bruise to her left forearm. She\ninitially stated she had knocked it on a door frame. When asked directly, and after\nI confirmed the consultation was confidential, she disclosed that her husband [REDACTED - third-party personal data]\nMULTITYPE had grabbed her arm during an argument four days ago.\n\nDomestic abuse disclosure:\nMrs MULTITYPE stated that [REDACTED - third-party personal data] has become increasingly aggressive over the past\nyear, since his retirement. She describes him checking her whereabouts constantly,\ndemanding to know who she has spoken to, and criticising her in front of family\nmembers. She mentioned their daughter [REDACTED - third-party personal data] has noticed a change in [REDACTED - third-party personal data]'s\nbehaviour and is worried. [REDACTED - third-party personal data] has visited more frequently in recent months and\nhas on two occasions asked [REDACTED - third-party personal data] directly to stop shouting, which [REDACTED - third-party personal data] resented.\n[REDACTED - third-party personal data] also confided in Beatrice that she witnessed her father throw a cup at the wall\nlast month, though Beatrice asked [REDACTED - third-party personal data] not to report this anywhere.\n\nA neighbour, whom the patient described as \"the woman who runs the post office on\n[REDACTED - third-party personal data] Street,\" apparently commented to the patient that she looked frightened when\nBeatrice came in to collect a parcel without [REDACTED - third-party personal data] last week. Beatrice found the\ncomment distressing, as she fears it means her situation is becoming visible in the\ncommunity.\n\nPhysical examination:\nLeft forearm: 4cm x 3cm bruise, consistent with a grip injury. No fracture suspected\nclinically. Photographs taken with consent for safeguarding records.\n\nDASH risk assessment: Score 14/24 — STANDARD RISK at present, but pattern suggests\nescalation may occur. Will monitor and re-assess.\n\nPlan:\n- Domestic abuse safety plan discussed and documented\n- Patient given concealed helpline card\n- Referral to safeguarding team initiated — see separate safeguarding note\n- [REDACTED - third-party personal data] not to be contacted without patient consent; however, Beatrice indicated she\n  would speak with [REDACTED - third-party personal data] herself\n- Bruise management: ice, elevation, no further intervention required\n\nSigned: Dr Fatima Al-Rashid, MRCGP\n",
+          "original_text": "ACACIA STREET FAMILY PRACTICE\nGP CONSULTATION NOTE — CONFIDENTIAL\n\nDate: 05 February 2024\nClinician: Dr Fatima Al-Rashid (GP)\nPatient: Beatrice MULTITYPE\nDOB: 19/11/1953\nNHS Number: 321 654 9870\nAddress: 22 Orchard Way, Chester CH4 8LQ\n\nPresenting complaint:\nMrs MULTITYPE attended complaining of a painful bruise to her left forearm. She\ninitially stated she had knocked it on a door frame. When asked directly, and after\nI confirmed the consultation was confidential, she disclosed that her husband Gerald\nMULTITYPE had grabbed her arm during an argument four days ago.\n\nDomestic abuse disclosure:\nMrs MULTITYPE stated that Gerald has become increasingly aggressive over the past\nyear, since his retirement. She describes him checking her whereabouts constantly,\ndemanding to know who she has spoken to, and criticising her in front of family\nmembers. She mentioned their daughter Sophie has noticed a change in Gerald's\nbehaviour and is worried. Sophie has visited more frequently in recent months and\nhas on two occasions asked Gerald directly to stop shouting, which Gerald resented.\nSophie also confided in Beatrice that she witnessed her father throw a cup at the wall\nlast month, though Beatrice asked Sophie not to report this anywhere.\n\nA neighbour, whom the patient described as \"the woman who runs the post office on\nAcacia Street,\" apparently commented to the patient that she looked frightened when\nBeatrice came in to collect a parcel without Gerald last week. Beatrice found the\ncomment distressing, as she fears it means her situation is becoming visible in the\ncommunity.\n\nPhysical examination:\nLeft forearm: 4cm x 3cm bruise, consistent with a grip injury. No fracture suspected\nclinically. Photographs taken with consent for safeguarding records.\n\nDASH risk assessment: Score 14/24 — STANDARD RISK at present, but pattern suggests\nescalation may occur. Will monitor and re-assess.\n\nPlan:\n- Domestic abuse safety plan discussed and documented\n- Patient given concealed helpline card\n- Referral to safeguarding team initiated — see separate safeguarding note\n- Sophie not to be contacted without patient consent; however, Beatrice indicated she\n  would speak with Sophie herself\n- Bruise management: ice, elevation, no further intervention required\n\nSigned: Dr Fatima Al-Rashid, MRCGP\n",
+          "error": ""
+        },
+        {
+          "filename": "02_Safeguarding_Referral.txt",
+          "proposed_redactions": [
+            {
+              "text": "Gerald MULTITYPE",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Identifying detail of a private individual.",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "11/03/1950",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Date of birth of a private individual.",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "22 Orchard Way, Chester CH4 8LQ",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Address of a private individual.",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "07700 902222",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Phone number of a private individual.",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "Lily (approximate date of birth: 2019",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Name and approximate DOB of a child.",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "2019",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Approximate date of birth of a child.",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "Marcus (Gerald's son)",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Name and relationship to a private individual.",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "Yvonne Bridges",
+              "tag": "AGENCY_CONFIDENTIAL_INFO",
+              "reason": "Name and direct contact details of a social worker.",
+              "replacement": "[REDACTED - agency confidential information]"
+            },
+            {
+              "text": "01244 000077",
+              "tag": "AGENCY_CONFIDENTIAL_INFO",
+              "reason": "Direct line of a social worker.",
+              "replacement": "[REDACTED - agency confidential information]"
+            },
+            {
+              "text": "Gerald",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Standalone name-part of third party (expanded from \"Gerald MULTITYPE\")",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "Chester",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Standalone name-part of third party (expanded from \"22 Orchard Way, Chester CH4 8LQ\")",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "Lily",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Standalone name-part of third party (expanded from \"Lily (approximate date of birth: 2019\")",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "Gerald's",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Standalone name-part of third party (expanded from \"Marcus (Gerald's son)\")",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "Orchard Way",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Name associated with agency contact (paired with 07700 902222)",
+              "replacement": "[REDACTED - agency contact]"
+            },
+            {
+              "text": "Cheshire West",
+              "tag": "AGENCY_CONFIDENTIAL_INFO",
+              "reason": "Name associated with agency contact (paired with 01244 000077)",
+              "replacement": "[REDACTED - agency contact]"
+            },
+            {
+              "text": "Chester Children",
+              "tag": "AGENCY_CONFIDENTIAL_INFO",
+              "reason": "Name associated with agency contact (paired with 01244 000077)",
+              "replacement": "[REDACTED - agency contact]"
+            },
+            {
+              "text": "Safeguarding Team",
+              "tag": "AGENCY_CONFIDENTIAL_INFO",
+              "reason": "Name associated with agency contact (paired with 01244 000077)",
+              "replacement": "[REDACTED - agency contact]"
+            }
+          ],
+          "escalations": [
+            {
+              "text": "Given Lily's age and the pattern of domestic violence in the household, a referral to Children's Social Care is required under Working Together 2023 guidance.",
+              "tag": "SAFEGUARDING_RISK",
+              "reason": "Content related to safeguarding referrals involving children."
+            },
+            {
+              "text": "DASH RISK SUMMARY: Score 14/24 at time of referral — STANDARD RISK, however the household includes a young child and the perpetrator's behaviour is escalating.",
+              "tag": "SAFEGUARDING_RISK",
+              "reason": "Content related to DASH risk assessment results."
+            },
+            {
+              "text": "MARAC: Not referred at this stage given standard risk score. To be reviewed at 6-week follow-up. If DASH score increases at next consultation, MARAC referral will be made.",
+              "tag": "SAFEGUARDING_RISK",
+              "reason": "Content related to potential future MARAC referrals."
+            }
+          ],
+          "redacted_text": "ACACIA STREET FAMILY PRACTICE / [REDACTED - agency contact] CHILDREN'S SAFEGUARDING\nSAFEGUARDING REFERRAL NOTE — STRICTLY CONFIDENTIAL\n\nDate: 06 February 2024\nReferring clinician: Dr Fatima Al-Rashid, GP\nCompleted in conjunction with: Practice safeguarding lead\n\nPATIENT (SUBJECT OF SAR):\nName: Beatrice MULTITYPE\nDOB: 19/11/1953\nNHS Number: 321 654 9870\nAddress: [REDACTED - third-party personal data]\n\nPERPETRATOR BLOCK:\nName: [REDACTED - third-party personal data]\nDOB: [REDACTED - third-party personal data]\nRelationship: Husband (co-habiting)\nAddress: [REDACTED - third-party personal data] (same address)\nTelephone: [REDACTED - third-party personal data]\nOccupation: Retired (former site manager)\nPrevious domestic abuse history: Unknown to GP surgery — DVDS check requested\n\nCHILD CONCERN:\nDuring the disclosure, Beatrice mentioned that her granddaughter [REDACTED - third-party personal data] (approximate\ndate of birth: [REDACTED - third-party personal data], making her approximately 5 years old) visits the family home\nregularly, usually one weekend per fortnight. Beatrice expressed concern that [REDACTED - third-party personal data]\nshould not be present during [REDACTED - third-party personal data] episodes of anger. Beatrice confirmed that [REDACTED - third-party personal data]\nis the daughter of her son [REDACTED - third-party personal data], who is aware of the visits.\n\nGiven [REDACTED - third-party personal data]'s age and the pattern of domestic violence in the household, a referral\nto Children's Social Care is required under Working Together 2023 guidance.\n\nSOCIAL WORKER ALLOCATED:\n[REDACTED - agency confidential information]\n[REDACTED - agency contact] and [REDACTED - agency contact]'s [REDACTED - agency contact]\nDirect line: [REDACTED - agency confidential information]\n\nDASH RISK SUMMARY:\nScore 14/24 at time of referral — STANDARD RISK, however the household includes\na young child and the perpetrator's behaviour is escalating. [REDACTED - agency confidential information] has\nconfirmed initial assessment will be completed within 10 working days.\n\nMARAC:\nNot referred at this stage given standard risk score. To be reviewed at 6-week\nfollow-up. If DASH score increases at next consultation, MARAC referral will be made.\n\nACTIONS:\n1. Children's Social Care informed — [REDACTED - agency confidential information] allocated\n2. Police disclosure form completed\n3. Safeguarding flag added to EMIS record of Beatrice MULTITYPE\n4. [REDACTED - third-party personal data]'s identity shared with police under DVDS\n\nSigned: Dr Fatima Al-Rashid, MRCGP   Date: 06/02/2024\n",
+          "original_text": "ACACIA STREET FAMILY PRACTICE / CHESHIRE WEST CHILDREN'S SAFEGUARDING\nSAFEGUARDING REFERRAL NOTE — STRICTLY CONFIDENTIAL\n\nDate: 06 February 2024\nReferring clinician: Dr Fatima Al-Rashid, GP\nCompleted in conjunction with: Practice safeguarding lead\n\nPATIENT (SUBJECT OF SAR):\nName: Beatrice MULTITYPE\nDOB: 19/11/1953\nNHS Number: 321 654 9870\nAddress: 22 Orchard Way, Chester CH4 8LQ\n\nPERPETRATOR BLOCK:\nName: Gerald MULTITYPE\nDOB: 11/03/1950\nRelationship: Husband (co-habiting)\nAddress: 22 Orchard Way, Chester CH4 8LQ (same address)\nTelephone: 07700 902222\nOccupation: Retired (former site manager)\nPrevious domestic abuse history: Unknown to GP surgery — DVDS check requested\n\nCHILD CONCERN:\nDuring the disclosure, Beatrice mentioned that her granddaughter Lily (approximate\ndate of birth: 2019, making her approximately 5 years old) visits the family home\nregularly, usually one weekend per fortnight. Beatrice expressed concern that Lily\nshould not be present during Gerald's episodes of anger. Beatrice confirmed that Lily\nis the daughter of her son Marcus (Gerald's son), who is aware of the visits.\n\nGiven Lily's age and the pattern of domestic violence in the household, a referral\nto Children's Social Care is required under Working Together 2023 guidance.\n\nSOCIAL WORKER ALLOCATED:\nYvonne Bridges\nCheshire West and Chester Children's Safeguarding Team\nDirect line: 01244 000077\n\nDASH RISK SUMMARY:\nScore 14/24 at time of referral — STANDARD RISK, however the household includes\na young child and the perpetrator's behaviour is escalating. Yvonne Bridges has\nconfirmed initial assessment will be completed within 10 working days.\n\nMARAC:\nNot referred at this stage given standard risk score. To be reviewed at 6-week\nfollow-up. If DASH score increases at next consultation, MARAC referral will be made.\n\nACTIONS:\n1. Children's Social Care informed — Yvonne Bridges allocated\n2. Police disclosure form completed\n3. Safeguarding flag added to EMIS record of Beatrice MULTITYPE\n4. Gerald MULTITYPE's identity shared with police under DVDS\n\nSigned: Dr Fatima Al-Rashid, MRCGP   Date: 06/02/2024\n",
+          "error": ""
+        },
+        {
+          "filename": "03_Admin_Misfiled_Letter.txt",
+          "proposed_redactions": [
+            {
+              "text": "Mr Raymond WRONGPERSON",
+              "tag": "OTHER_PATIENT_DATA",
+              "reason": "Data belongs to a different patient.",
+              "replacement": "[REDACTED - other patient's data]"
+            },
+            {
+              "text": "DOB: 22/06/1948",
+              "tag": "OTHER_PATIENT_DATA",
+              "reason": "Data belongs to a different patient.",
+              "replacement": "[REDACTED - other patient's data]"
+            },
+            {
+              "text": "NHS Number: 444 555 6666",
+              "tag": "OTHER_PATIENT_DATA",
+              "reason": "Data belongs to a different patient.",
+              "replacement": "[REDACTED - other patient's data]"
+            },
+            {
+              "text": "Address: 8 Park Lane, Warrington WA2 7HH",
+              "tag": "OTHER_PATIENT_DATA",
+              "reason": "Data belongs to a different patient.",
+              "replacement": "[REDACTED - other patient's data]"
+            }
+          ],
+          "escalations": [],
+          "redacted_text": "ACACIA STREET FAMILY PRACTICE\nADMINISTRATIVE NOTE — MISFILED CORRESPONDENCE IDENTIFIED\n\nDate: 12 February 2024\nCompleted by: Chloe Finch, Senior Receptionist\n\nPatient record: Beatrice MULTITYPE\nDOB: 19/11/1953\nNHS Number: 321 654 9870\n\nFiling error:\nThe following hospital letter was discovered incorrectly filed within the above\npatient's medical record during a routine scan-and-file audit. The demographics\nand clinical content are entirely unrelated to Beatrice MULTITYPE.\n\n--- BEGIN MISFILED DOCUMENT ---\n\nWarrington Hospital NHS Foundation Trust\nTrauma and Orthopaedics Outpatient Department\nLovely Lane, Warrington WA5 1QG\n\nDate: 29 January 2024\nRe: [REDACTED - other patient's data]\n[REDACTED - other patient's data]\n[REDACTED - other patient's data]\n[REDACTED - other patient's data]\n\nDear GP,\n\nThank you for referring [REDACTED - other patient's data] with ongoing right hip pain. Mr\nWRONGPERSON attended the orthopaedic clinic on 26 January 2024. Plain radiographs\ndemonstrate moderate osteoarthritis of the right hip with joint space narrowing.\nWe have placed Mr WRONGPERSON on the waiting list for a right total hip replacement.\nHe has been commenced on Naproxen 500mg BD with a proton pump inhibitor.\n\nYours sincerely,\nMr David Greenwood, Consultant Orthopaedic Surgeon\n\n--- END MISFILED DOCUMENT ---\n\nAction:\nDocument flagged for removal from Beatrice MULTITYPE's record and referred to\nmedical records manager for filing to the correct patient. Orthopaedic secretary\ncontacted by telephone.\n\nSigned: Chloe Finch, Senior Receptionist\n",
+          "original_text": "ACACIA STREET FAMILY PRACTICE\nADMINISTRATIVE NOTE — MISFILED CORRESPONDENCE IDENTIFIED\n\nDate: 12 February 2024\nCompleted by: Chloe Finch, Senior Receptionist\n\nPatient record: Beatrice MULTITYPE\nDOB: 19/11/1953\nNHS Number: 321 654 9870\n\nFiling error:\nThe following hospital letter was discovered incorrectly filed within the above\npatient's medical record during a routine scan-and-file audit. The demographics\nand clinical content are entirely unrelated to Beatrice MULTITYPE.\n\n--- BEGIN MISFILED DOCUMENT ---\n\nWarrington Hospital NHS Foundation Trust\nTrauma and Orthopaedics Outpatient Department\nLovely Lane, Warrington WA5 1QG\n\nDate: 29 January 2024\nRe: Mr Raymond WRONGPERSON\nDOB: 22/06/1948\nNHS Number: 444 555 6666\nAddress: 8 Park Lane, Warrington WA2 7HH\n\nDear GP,\n\nThank you for referring Mr Raymond WRONGPERSON with ongoing right hip pain. Mr\nWRONGPERSON attended the orthopaedic clinic on 26 January 2024. Plain radiographs\ndemonstrate moderate osteoarthritis of the right hip with joint space narrowing.\nWe have placed Mr WRONGPERSON on the waiting list for a right total hip replacement.\nHe has been commenced on Naproxen 500mg BD with a proton pump inhibitor.\n\nYours sincerely,\nMr David Greenwood, Consultant Orthopaedic Surgeon\n\n--- END MISFILED DOCUMENT ---\n\nAction:\nDocument flagged for removal from Beatrice MULTITYPE's record and referred to\nmedical records manager for filing to the correct patient. Orthopaedic secretary\ncontacted by telephone.\n\nSigned: Chloe Finch, Senior Receptionist\n",
+          "error": ""
+        }
+      ],
+      "missed_redactions": [],
+      "over_redactions": [],
+      "escalation_hits": [],
+      "escalation_misses": [],
+      "pass": true
+    },
+    {
+      "zip": "Test-Kwame-COMPLAINT-v2.zip",
+      "patient_name": "Kwame COMPLAINT",
+      "documents": [
+        {
+          "filename": "01_Formal_Complaint_Letter.txt",
+          "proposed_redactions": [],
+          "escalations": [],
+          "redacted_text": "NORTHGATE SURGERY\nFORMAL PATIENT COMPLAINT — RECEIVED IN WRITING\n\nDate received: 02 March 2024\nPatient: Kwame COMPLAINT\nDOB: 05/07/1978\nNHS Number: 100 200 3000\nAddress: 88 Pennington Road, Birmingham B15 2TT\n\nLetter of complaint (verbatim):\n\nDear Practice Manager,\n\nI am writing to formally complain about my consultation with Dr Amara Osei at your\nsurgery on 14 February 2024. I attended because I have been experiencing persistent\nchest pain over several weeks. During this appointment, Dr Amara Osei was dismissive\nof my concerns and failed to conduct any physical examination despite my repeated\nrequests. When I explained that the pain was radiating to my left arm, Dr Amara Osei\ntold me it was \"probably muscular\" and ended the appointment after less than five minutes.\n\nI was given no investigation, no referral, and no safety-netting advice. I subsequently\nattended A&E the following day, where an ECG revealed ST-segment changes and I was\nadmitted to the cardiac care unit for three days. I was discharged with a diagnosis of\nNSTEMI and a prescription for dual antiplatelet therapy.\n\nI believe Dr Amara Osei's conduct during that consultation fell well below the standard\nexpected of a GP and may have placed my life at risk. I am requesting a full written\nresponse, a copy of my medical records from that date, and an explanation of the steps\nthe practice will take to prevent a similar occurrence in the future.\n\nI reserve the right to refer this matter to NHS England and the General Medical Council\nif I am not satisfied with the practice's response.\n\nYours sincerely,\nKwame COMPLAINT\n05/07/1978\n\n---\n\nPRACTICE MANAGER'S LOG NOTE:\nComplaint received 02/03/2024. Acknowledged to patient 04/03/2024 (within 3 working\ndays per NHS Complaints Procedure). Complaint allocated to Dr Sarah Yates (Clinical\nLead) for clinical review. Dr Amara Osei informed and invited to provide a written\naccount of the 14 February consultation. EMIS record for that date requested. Target\nresponse date: 02/04/2024.\n",
+          "original_text": "NORTHGATE SURGERY\nFORMAL PATIENT COMPLAINT — RECEIVED IN WRITING\n\nDate received: 02 March 2024\nPatient: Kwame COMPLAINT\nDOB: 05/07/1978\nNHS Number: 100 200 3000\nAddress: 88 Pennington Road, Birmingham B15 2TT\n\nLetter of complaint (verbatim):\n\nDear Practice Manager,\n\nI am writing to formally complain about my consultation with Dr Amara Osei at your\nsurgery on 14 February 2024. I attended because I have been experiencing persistent\nchest pain over several weeks. During this appointment, Dr Amara Osei was dismissive\nof my concerns and failed to conduct any physical examination despite my repeated\nrequests. When I explained that the pain was radiating to my left arm, Dr Amara Osei\ntold me it was \"probably muscular\" and ended the appointment after less than five minutes.\n\nI was given no investigation, no referral, and no safety-netting advice. I subsequently\nattended A&E the following day, where an ECG revealed ST-segment changes and I was\nadmitted to the cardiac care unit for three days. I was discharged with a diagnosis of\nNSTEMI and a prescription for dual antiplatelet therapy.\n\nI believe Dr Amara Osei's conduct during that consultation fell well below the standard\nexpected of a GP and may have placed my life at risk. I am requesting a full written\nresponse, a copy of my medical records from that date, and an explanation of the steps\nthe practice will take to prevent a similar occurrence in the future.\n\nI reserve the right to refer this matter to NHS England and the General Medical Council\nif I am not satisfied with the practice's response.\n\nYours sincerely,\nKwame COMPLAINT\n05/07/1978\n\n---\n\nPRACTICE MANAGER'S LOG NOTE:\nComplaint received 02/03/2024. Acknowledged to patient 04/03/2024 (within 3 working\ndays per NHS Complaints Procedure). Complaint allocated to Dr Sarah Yates (Clinical\nLead) for clinical review. Dr Amara Osei informed and invited to provide a written\naccount of the 14 February consultation. EMIS record for that date requested. Target\nresponse date: 02/04/2024.\n",
+          "error": ""
+        },
+        {
+          "filename": "02_GP_Clinical_Note_Post_Discharge.txt",
+          "proposed_redactions": [],
+          "escalations": [],
+          "redacted_text": "NORTHGATE SURGERY\nGP CLINICAL CONSULTATION NOTE\n\nDate: 19 March 2024\nClinician: Dr Amara Osei (GP)\nPatient: Kwame COMPLAINT\nDOB: 05/07/1978\nNHS Number: 100 200 3000\nAddress: 88 Pennington Road, Birmingham B15 2TT\n\nPresenting complaint:\nMr COMPLAINT attended for a post-discharge medication review following his recent\nadmission to Birmingham City Hospital Cardiac Care Unit (CCU), 15–17 February 2024.\nDiagnosis on discharge: Non-ST-elevation myocardial infarction (NSTEMI).\n\nHistory and current status:\nMr COMPLAINT is now on dual antiplatelet therapy (Aspirin 75mg OD and Ticagrelor\n90mg BD), Atorvastatin 80mg OD, Bisoprolol 2.5mg OD, and Ramipril 2.5mg OD as per\nthe discharge letter from the cardiology team at Birmingham City Hospital.\n\nHe reports his chest pain has resolved. He is mobilising without symptoms and feels\nsignificantly better than prior to admission. He has no current breathlessness, ankle\nswelling, or palpitations.\n\nExamination:\nPulse: 62 bpm, regular. Blood pressure: 126/80 mmHg. Auscultation: heart sounds\nnormal, no murmurs. Chest clear. No peripheral oedema.\n\nECG: Performed in clinic today — sinus rhythm, no acute changes. Prior ST-segment\nchanges have resolved.\n\nManagement plan:\n- Prescriptions for all cardiac medications issued\n- Patient referred to cardiac rehabilitation programme (letter sent today)\n- Repeat ECG and blood tests (renal function, lipids) in 4 weeks\n- Echocardiogram requested (community cardiology service)\n- Patient advised regarding lifestyle: diet, smoking cessation (patient is a\n  non-smoker), alcohol limits, and graduated return to physical activity\n- Patient provided with BHF information booklet\n\nFollow-up: In 4 weeks or sooner if symptomatic.\n\nSigned: Dr Amara Osei, MRCGP\n",
+          "original_text": "NORTHGATE SURGERY\nGP CLINICAL CONSULTATION NOTE\n\nDate: 19 March 2024\nClinician: Dr Amara Osei (GP)\nPatient: Kwame COMPLAINT\nDOB: 05/07/1978\nNHS Number: 100 200 3000\nAddress: 88 Pennington Road, Birmingham B15 2TT\n\nPresenting complaint:\nMr COMPLAINT attended for a post-discharge medication review following his recent\nadmission to Birmingham City Hospital Cardiac Care Unit (CCU), 15–17 February 2024.\nDiagnosis on discharge: Non-ST-elevation myocardial infarction (NSTEMI).\n\nHistory and current status:\nMr COMPLAINT is now on dual antiplatelet therapy (Aspirin 75mg OD and Ticagrelor\n90mg BD), Atorvastatin 80mg OD, Bisoprolol 2.5mg OD, and Ramipril 2.5mg OD as per\nthe discharge letter from the cardiology team at Birmingham City Hospital.\n\nHe reports his chest pain has resolved. He is mobilising without symptoms and feels\nsignificantly better than prior to admission. He has no current breathlessness, ankle\nswelling, or palpitations.\n\nExamination:\nPulse: 62 bpm, regular. Blood pressure: 126/80 mmHg. Auscultation: heart sounds\nnormal, no murmurs. Chest clear. No peripheral oedema.\n\nECG: Performed in clinic today — sinus rhythm, no acute changes. Prior ST-segment\nchanges have resolved.\n\nManagement plan:\n- Prescriptions for all cardiac medications issued\n- Patient referred to cardiac rehabilitation programme (letter sent today)\n- Repeat ECG and blood tests (renal function, lipids) in 4 weeks\n- Echocardiogram requested (community cardiology service)\n- Patient advised regarding lifestyle: diet, smoking cessation (patient is a\n  non-smoker), alcohol limits, and graduated return to physical activity\n- Patient provided with BHF information booklet\n\nFollow-up: In 4 weeks or sooner if symptomatic.\n\nSigned: Dr Amara Osei, MRCGP\n",
+          "error": ""
+        }
+      ],
+      "missed_redactions": [],
+      "over_redactions": [],
+      "escalation_hits": [],
+      "escalation_misses": [
+        "Dr Amara Osei"
+      ],
+      "pass": false
+    },
+    {
+      "zip": "Test-Nuala-MISFILED-v2.zip",
+      "patient_name": "Nuala MISFILED",
+      "documents": [
+        {
+          "filename": "01_Admin_Misfiled_Letter.txt",
+          "proposed_redactions": [
+            {
+              "text": "Mrs Dorothy OTHERPATIENT",
+              "tag": "OTHER_PATIENT_DATA",
+              "reason": "Belongs to a different patient.",
+              "replacement": "[REDACTED - other patient data]"
+            },
+            {
+              "text": "07/04/1952",
+              "tag": "OTHER_PATIENT_DATA",
+              "reason": "Belongs to a different patient.",
+              "replacement": "[REDACTED - other patient data]"
+            },
+            {
+              "text": "222 333 4444",
+              "tag": "OTHER_PATIENT_DATA",
+              "reason": "Belongs to a different patient.",
+              "replacement": "[REDACTED - other patient data]"
+            },
+            {
+              "text": "15 Elm Road, Chester CH1 9QQ",
+              "tag": "OTHER_PATIENT_DATA",
+              "reason": "Belongs to a different patient.",
+              "replacement": "[REDACTED - other patient data]"
+            }
+          ],
+          "escalations": [],
+          "redacted_text": "RIVERSIDE HEALTH CENTRE\nADMINISTRATIVE NOTE — FILING ERROR IDENTIFIED\n\nDate: 22 January 2024\nCompleted by: Jade Thornton, Medical Records Administrator\n\nPatient record: Nuala MISFILED\nDOB: 12/09/1970\nNHS Number: 777 888 9999\nAddress: 3 Sycamore Drive, Chester CH2 4LN\n\nNature of filing error:\nDuring a routine audit of clinical correspondence, the following letter was identified\nas incorrectly filed within the medical record of Nuala MISFILED. The letter below\nappears to have been filed in error and belongs to a different patient entirely. The\ndemographics, NHS number, and clinical content do not match those of Nuala MISFILED\nin any respect.\n\n--- BEGIN MISFILED LETTER ---\n\nChester Royal Infirmary\nGynaecology Outpatient Department\nEastgate Street, Chester CH1 1RB\n\nDate: 09 January 2024\nRe: [REDACTED - other patient data]\nDOB: [REDACTED - other patient data]\nNHS Number: [REDACTED - other patient data]\nAddress: [REDACTED - other patient data]\n\nDear Dr Leighton,\n\nThank you for referring [REDACTED - other patient data] for investigation of postmenopausal\nbleeding. Mrs OTHERPATIENT attended the colposcopy clinic on 08 January 2024.\nTransvaginal ultrasound demonstrated an endometrial thickness of 6mm. Endometrial\nbiopsy was performed. We will write again when histology results are available.\n\nYours sincerely,\nMr Jonathan Fielding, Consultant Gynaecologist\n\n--- END MISFILED LETTER ---\n\nAction taken:\nThe misfiled letter has been flagged for removal from Nuala MISFILED's record pending\nconfirmation of correct patient. The relevant consultant's secretary has been notified.\nA copy has been placed in a pending tray for filing to the correct patient record once\nidentity has been verified.\n\nSigned: Jade Thornton, Medical Records Administrator\n",
+          "original_text": "RIVERSIDE HEALTH CENTRE\nADMINISTRATIVE NOTE — FILING ERROR IDENTIFIED\n\nDate: 22 January 2024\nCompleted by: Jade Thornton, Medical Records Administrator\n\nPatient record: Nuala MISFILED\nDOB: 12/09/1970\nNHS Number: 777 888 9999\nAddress: 3 Sycamore Drive, Chester CH2 4LN\n\nNature of filing error:\nDuring a routine audit of clinical correspondence, the following letter was identified\nas incorrectly filed within the medical record of Nuala MISFILED. The letter below\nappears to have been filed in error and belongs to a different patient entirely. The\ndemographics, NHS number, and clinical content do not match those of Nuala MISFILED\nin any respect.\n\n--- BEGIN MISFILED LETTER ---\n\nChester Royal Infirmary\nGynaecology Outpatient Department\nEastgate Street, Chester CH1 1RB\n\nDate: 09 January 2024\nRe: Mrs Dorothy OTHERPATIENT\nDOB: 07/04/1952\nNHS Number: 222 333 4444\nAddress: 15 Elm Road, Chester CH1 9QQ\n\nDear Dr Leighton,\n\nThank you for referring Mrs Dorothy OTHERPATIENT for investigation of postmenopausal\nbleeding. Mrs OTHERPATIENT attended the colposcopy clinic on 08 January 2024.\nTransvaginal ultrasound demonstrated an endometrial thickness of 6mm. Endometrial\nbiopsy was performed. We will write again when histology results are available.\n\nYours sincerely,\nMr Jonathan Fielding, Consultant Gynaecologist\n\n--- END MISFILED LETTER ---\n\nAction taken:\nThe misfiled letter has been flagged for removal from Nuala MISFILED's record pending\nconfirmation of correct patient. The relevant consultant's secretary has been notified.\nA copy has been placed in a pending tray for filing to the correct patient record once\nidentity has been verified.\n\nSigned: Jade Thornton, Medical Records Administrator\n",
+          "error": ""
+        },
+        {
+          "filename": "02_GP_Consultation_Note.txt",
+          "proposed_redactions": [],
+          "escalations": [],
+          "redacted_text": "RIVERSIDE HEALTH CENTRE\nGP CONSULTATION NOTE — CONFIDENTIAL\n\nDate: 15 March 2024\nClinician: Dr Helen Leighton (GP Principal)\nPatient: Nuala MISFILED\nDOB: 12/09/1970\nNHS Number: 777 888 9999\nAddress: 3 Sycamore Drive, Chester CH2 4LN\n\nPresenting complaint:\nMs MISFILED attended for a routine annual review. She has a background of well-controlled\nhypothyroidism and mild anxiety disorder. She has no other significant medical history.\n\nHistory:\nMs MISFILED reports feeling well overall. She has been taking Levothyroxine 75mcg OD\nconsistently and has experienced no side effects. She reports her mood has been stable\nand she has continued attending monthly CBT sessions with a psychology service, which\nshe describes as helpful.\n\nExamination:\nGeneral appearance: Well. Weight: 68kg. BMI: 24.1. Blood pressure: 118/74 mmHg.\nHeart rate: 72 bpm, regular. Thyroid: not palpable. No lymphadenopathy.\n\nInvestigations:\nRecent TFTs (01 March 2024): TSH 1.8 mU/L (within range), FT4 16.4 pmol/L (normal).\nNo further investigations required at this time.\n\nPlan:\n- Continue Levothyroxine 75mcg OD\n- Continue psychological support — patient reports good progress\n- Repeat TFTs in 12 months\n- Patient to return sooner if symptomatic\n\nNo safeguarding concerns identified. No third-party information discussed or recorded\nat this consultation.\n\nSigned: Dr Helen Leighton, MRCGP\n",
+          "original_text": "RIVERSIDE HEALTH CENTRE\nGP CONSULTATION NOTE — CONFIDENTIAL\n\nDate: 15 March 2024\nClinician: Dr Helen Leighton (GP Principal)\nPatient: Nuala MISFILED\nDOB: 12/09/1970\nNHS Number: 777 888 9999\nAddress: 3 Sycamore Drive, Chester CH2 4LN\n\nPresenting complaint:\nMs MISFILED attended for a routine annual review. She has a background of well-controlled\nhypothyroidism and mild anxiety disorder. She has no other significant medical history.\n\nHistory:\nMs MISFILED reports feeling well overall. She has been taking Levothyroxine 75mcg OD\nconsistently and has experienced no side effects. She reports her mood has been stable\nand she has continued attending monthly CBT sessions with a psychology service, which\nshe describes as helpful.\n\nExamination:\nGeneral appearance: Well. Weight: 68kg. BMI: 24.1. Blood pressure: 118/74 mmHg.\nHeart rate: 72 bpm, regular. Thyroid: not palpable. No lymphadenopathy.\n\nInvestigations:\nRecent TFTs (01 March 2024): TSH 1.8 mU/L (within range), FT4 16.4 pmol/L (normal).\nNo further investigations required at this time.\n\nPlan:\n- Continue Levothyroxine 75mcg OD\n- Continue psychological support — patient reports good progress\n- Repeat TFTs in 12 months\n- Patient to return sooner if symptomatic\n\nNo safeguarding concerns identified. No third-party information discussed or recorded\nat this consultation.\n\nSigned: Dr Helen Leighton, MRCGP\n",
+          "error": ""
+        }
+      ],
+      "missed_redactions": [],
+      "over_redactions": [],
+      "escalation_hits": [],
+      "escalation_misses": [],
+      "pass": true
+    },
+    {
+      "zip": "Test-Peter-FIRSTONLY-v2.zip",
+      "patient_name": "Peter FIRSTONLY",
+      "documents": [
+        {
+          "filename": "01_GP_Consultation_Note.txt",
+          "proposed_redactions": [
+            {
+              "text": "Emma",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Daughter's name mentioned as a concerned family member.",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "Janet",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Wife's name mentioned as the primary carer.",
+              "replacement": "[REDACTED - third-party personal data]"
+            }
+          ],
+          "escalations": [],
+          "redacted_text": "MILLBROOK SURGERY\nGP CONSULTATION NOTE — CONFIDENTIAL\n\nDate: 07 February 2024\nClinician: Dr Samuel Okafor (GP)\nPatient: Peter FIRSTONLY\nDOB: 28/02/1945\nNHS Number: 444 555 6666\nAddress: 12 Bluebell Close, Warrington WA4 2RR\n\nPresenting complaint:\nMr FIRSTONLY attended for his quarterly medication review. He is known to the practice\nwith a background of type 2 diabetes mellitus, ischaemic heart disease, and moderate\ncognitive impairment. He attended alone today.\n\nSocial history update:\nMr FIRSTONLY's daughter [REDACTED - third-party personal data] visits regularly, usually twice a week. [REDACTED - third-party personal data] has expressed\nconcern to the practice on previous occasions about her father's ability to manage his\nmedications independently. On 22 January 2024 [REDACTED - third-party personal data] phoned the surgery to report that\nshe had found several unused insulin cartridges that should have been administered.\n[REDACTED - third-party personal data] was advised to contact the community diabetes nurse. There is no record that [REDACTED - third-party personal data]\nhas been formally assessed as a carer.\n\nCurrent carer:\nMr FIRSTONLY's wife [REDACTED - third-party personal data] is his primary carer. [REDACTED - third-party personal data] manages all medications on a\nday-to-day basis, administers his morning and evening insulin, and accompanies him to\nmost clinical appointments. [REDACTED - third-party personal data] has not been referred for a formal carer's assessment\nbut this was discussed with Mr FIRSTONLY today.\n\nClinical review:\nHbA1c: 68 mmol/mol (slight improvement from 74 at last review — attributed to [REDACTED - third-party personal data]'s\nimproved medication administration routine). Blood pressure: 134/78 mmHg. Weight\nstable. Foot check completed — no active ulceration.\n\nPlan:\n- Continue current medication regimen (Metformin 1g BD, Insulin Glargine 20 units ON,\n  Aspirin 75mg OD, Atorvastatin 40mg OD, Ramipril 5mg OD)\n- Refer [REDACTED - third-party personal data] for formal carer's assessment via social care — consent obtained\n- Request from [REDACTED - third-party personal data] that she contacts surgery only via agreed communication pathway\n- Repeat HbA1c in 3 months\n\nSigned: Dr Samuel Okafor, MRCGP\n",
+          "original_text": "MILLBROOK SURGERY\nGP CONSULTATION NOTE — CONFIDENTIAL\n\nDate: 07 February 2024\nClinician: Dr Samuel Okafor (GP)\nPatient: Peter FIRSTONLY\nDOB: 28/02/1945\nNHS Number: 444 555 6666\nAddress: 12 Bluebell Close, Warrington WA4 2RR\n\nPresenting complaint:\nMr FIRSTONLY attended for his quarterly medication review. He is known to the practice\nwith a background of type 2 diabetes mellitus, ischaemic heart disease, and moderate\ncognitive impairment. He attended alone today.\n\nSocial history update:\nMr FIRSTONLY's daughter Emma visits regularly, usually twice a week. Emma has expressed\nconcern to the practice on previous occasions about her father's ability to manage his\nmedications independently. On 22 January 2024 Emma phoned the surgery to report that\nshe had found several unused insulin cartridges that should have been administered.\nEmma was advised to contact the community diabetes nurse. There is no record that Emma\nhas been formally assessed as a carer.\n\nCurrent carer:\nMr FIRSTONLY's wife Janet is his primary carer. Janet manages all medications on a\nday-to-day basis, administers his morning and evening insulin, and accompanies him to\nmost clinical appointments. Janet has not been referred for a formal carer's assessment\nbut this was discussed with Mr FIRSTONLY today.\n\nClinical review:\nHbA1c: 68 mmol/mol (slight improvement from 74 at last review — attributed to Janet's\nimproved medication administration routine). Blood pressure: 134/78 mmHg. Weight\nstable. Foot check completed — no active ulceration.\n\nPlan:\n- Continue current medication regimen (Metformin 1g BD, Insulin Glargine 20 units ON,\n  Aspirin 75mg OD, Atorvastatin 40mg OD, Ramipril 5mg OD)\n- Refer Janet for formal carer's assessment via social care — consent obtained\n- Request from Emma that she contacts surgery only via agreed communication pathway\n- Repeat HbA1c in 3 months\n\nSigned: Dr Samuel Okafor, MRCGP\n",
+          "error": ""
+        },
+        {
+          "filename": "02_Carer_Assessment_Note.txt",
+          "proposed_redactions": [
+            {
+              "text": "Janet",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Identifies the patient's wife as a third party.",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "28/09/1945",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Date of birth for Janet, the patient's wife.",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "01925 000055",
+              "tag": "AGENCY_CONFIDENTIAL_INFO",
+              "reason": "Direct contact number for social worker.",
+              "replacement": "[REDACTED - agency confidential information]"
+            },
+            {
+              "text": "Emma",
+              "tag": "THIRD_PARTY_IDENTIFIER",
+              "reason": "Identifies the patient's daughter as a third party.",
+              "replacement": "[REDACTED - third-party personal data]"
+            },
+            {
+              "text": "Diane Okafor",
+              "tag": "AGENCY_CONFIDENTIAL_INFO",
+              "reason": "Name associated with agency contact (paired with 01925 000055)",
+              "replacement": "[REDACTED - agency contact]"
+            },
+            {
+              "text": "Cheshire West",
+              "tag": "AGENCY_CONFIDENTIAL_INFO",
+              "reason": "Name associated with agency contact (paired with 01925 000055)",
+              "replacement": "[REDACTED - agency contact]"
+            },
+            {
+              "text": "Chester Council",
+              "tag": "AGENCY_CONFIDENTIAL_INFO",
+              "reason": "Name associated with agency contact (paired with 01925 000055)",
+              "replacement": "[REDACTED - agency contact]"
+            },
+            {
+              "text": "Adult Social Care",
+              "tag": "AGENCY_CONFIDENTIAL_INFO",
+              "reason": "Name associated with agency contact (paired with 01925 000055)",
+              "replacement": "[REDACTED - agency contact]"
+            },
+            {
+              "text": "Mr Peter",
+              "tag": "AGENCY_CONFIDENTIAL_INFO",
+              "reason": "Name associated with agency contact (paired with 01925 000055)",
+              "replacement": "[REDACTED - agency contact]"
+            }
+          ],
+          "escalations": [
+            {
+              "text": "Janet reported feeling overwhelmed by the responsibility of managing Peter's insulin regime and expressed concern that she did not feel she had received adequate training.",
+              "tag": "SAFEGUARDING_RISK",
+              "reason": "Discloses potential risk to a carer's wellbeing."
+            }
+          ],
+          "redacted_text": "MILLBROOK SURGERY / [REDACTED - agency contact] SOCIAL CARE\nCARER ASSESSMENT AND SUPPORT NOTE — CONFIDENTIAL\n\nDate: 19 February 2024\nCompleted following referral from Dr Samuel Okafor, Millbrook Surgery\n\nPatient: Peter FIRSTONLY\nDOB: 28/02/1945\nNHS Number: 444 555 6666\nAddress: 12 Bluebell Close, Warrington WA4 2RR\n\nSocial worker: [REDACTED - agency contact]\nAgency: [REDACTED - agency contact] and [REDACTED - agency contact], [REDACTED - agency contact]\nDirect contact: [REDACTED - agency confidential information]\n\nBackground:\nThis carer assessment was completed following a GP referral in respect of [REDACTED - agency contact]\nFIRSTONLY. Mr FIRSTONLY has type 2 diabetes and moderate cognitive impairment. His wife\n[REDACTED - third-party personal data] is identified as his primary informal carer and has been managing all medications,\nincluding insulin administration, since approximately September 2023.\n\nCarer assessment ([REDACTED - third-party personal data]):\n[REDACTED - third-party personal data] was interviewed at the family home on 19 February 2024. [REDACTED - third-party personal data] reported feeling\noverwhelmed by the responsibility of managing Peter's insulin regime and expressed\nconcern that she did not feel she had received adequate training. [REDACTED - third-party personal data] indicated she\nsometimes experiences anxiety about administering the wrong dose, particularly as Peter's\nprescription was recently changed. [REDACTED - third-party personal data] confirmed she is not currently in receipt of\nany carer's support services and has not had a break from caring in over four months.\n\n[REDACTED - third-party personal data] demonstrated competence in the physical tasks of caring; however, her emotional\nwellbeing is a concern. She was offered referral to the local carer's support group\nand the Carers Trust helpline.\n\nRisk assessment:\nThe arrangement is sustainable in the short term, provided [REDACTED - third-party personal data] receives additional\ntraining from the community diabetes nurse. A safety-netting plan has been agreed.\n[REDACTED - third-party personal data] (Mr FIRSTONLY's daughter) has also been noted as providing supplementary support;\nhowever, [REDACTED - third-party personal data]'s role is informal and she is not available on a daily basis.\n\nRecommendations:\n1. Community diabetes nurse to visit and provide insulin administration refresher for [REDACTED - third-party personal data]\n2. [REDACTED - third-party personal data] to be referred to the Carers Trust for emotional wellbeing support\n3. Telecare pendant alarm for Mr FIRSTONLY to be arranged via equipment service\n4. Review in six months or sooner if situation deteriorates\n\nSigned: [REDACTED - agency contact], Social Worker\n[REDACTED - agency contact] and [REDACTED - agency contact], [REDACTED - agency contact]\nTel: [REDACTED - agency confidential information]\n",
+          "original_text": "MILLBROOK SURGERY / CHESHIRE WEST SOCIAL CARE\nCARER ASSESSMENT AND SUPPORT NOTE — CONFIDENTIAL\n\nDate: 19 February 2024\nCompleted following referral from Dr Samuel Okafor, Millbrook Surgery\n\nPatient: Peter FIRSTONLY\nDOB: 28/02/1945\nNHS Number: 444 555 6666\nAddress: 12 Bluebell Close, Warrington WA4 2RR\n\nSocial worker: Diane Okafor\nAgency: Cheshire West and Chester Council, Adult Social Care\nDirect contact: 01925 000055\n\nBackground:\nThis carer assessment was completed following a GP referral in respect of Mr Peter\nFIRSTONLY. Mr FIRSTONLY has type 2 diabetes and moderate cognitive impairment. His wife\nJanet is identified as his primary informal carer and has been managing all medications,\nincluding insulin administration, since approximately September 2023.\n\nCarer assessment (Janet):\nJanet was interviewed at the family home on 19 February 2024. Janet reported feeling\noverwhelmed by the responsibility of managing Peter's insulin regime and expressed\nconcern that she did not feel she had received adequate training. Janet indicated she\nsometimes experiences anxiety about administering the wrong dose, particularly as Peter's\nprescription was recently changed. Janet confirmed she is not currently in receipt of\nany carer's support services and has not had a break from caring in over four months.\n\nJanet demonstrated competence in the physical tasks of caring; however, her emotional\nwellbeing is a concern. She was offered referral to the local carer's support group\nand the Carers Trust helpline.\n\nRisk assessment:\nThe arrangement is sustainable in the short term, provided Janet receives additional\ntraining from the community diabetes nurse. A safety-netting plan has been agreed.\nEmma (Mr FIRSTONLY's daughter) has also been noted as providing supplementary support;\nhowever, Emma's role is informal and she is not available on a daily basis.\n\nRecommendations:\n1. Community diabetes nurse to visit and provide insulin administration refresher for Janet\n2. Janet to be referred to the Carers Trust for emotional wellbeing support\n3. Telecare pendant alarm for Mr FIRSTONLY to be arranged via equipment service\n4. Review in six months or sooner if situation deteriorates\n\nSigned: Diane Okafor, Social Worker\nCheshire West and Chester Council, Adult Social Care\nTel: 01925 000055\n",
+          "error": ""
+        }
+      ],
+      "missed_redactions": [],
+      "over_redactions": [],
+      "escalation_hits": [],
+      "escalation_misses": [],
+      "pass": true
+    }
+  ],
+  "summary": {
+    "total_missed": 0,
+    "total_over_redacted": 0,
+    "total_escalation_misses": 1,
+    "pass_rate": "4/5"
+  }
+}

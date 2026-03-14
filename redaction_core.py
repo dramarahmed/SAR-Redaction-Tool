@@ -1,0 +1,702 @@
+"""
+redaction_core.py
+=================
+Pure-logic SAR redaction functions extracted from app.py.
+No Streamlit dependencies — safe to import from tests, CLI scripts, or batch runners.
+"""
+
+import re
+import json
+import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+
+import ollama
+
+
+# =============================================================================
+# NHS SAR Redaction Ontology
+# =============================================================================
+
+REDACTION_TAGS = {
+    # ── Auto-redact ───────────────────────────────────────────────────────────
+    "THIRD_PARTY_IDENTIFIER": {
+        "label":  "Third-party identifier",
+        "desc":   "Name or identifying detail of a private individual (family, carer, neighbour, friend)",
+        "action": "redact",
+    },
+    "CONFIDENTIAL_DISCLOSURE": {
+        "label":  "Confidential third-party disclosure",
+        "desc":   "Information given in confidence by a third party; anonymous or pseudonymous reports",
+        "action": "redact",
+    },
+    "OTHER_PATIENT_DATA": {
+        "label":  "Other patient's data",
+        "desc":   "Data belonging to a different patient (misfiled notes, clinic list error, wrong results)",
+        "action": "redact",
+    },
+    "AGENCY_CONFIDENTIAL_INFO": {
+        "label":  "Agency / social care report",
+        "desc":   "Social worker, school, police or probation report that identifies a third party",
+        "action": "redact",
+    },
+    "INDIRECT_IDENTIFIER": {
+        "label":  "Indirect identifier",
+        "desc":   "Text that would identify a third party without naming them explicitly",
+        "action": "redact",
+    },
+    # ── Escalate for qualified human decision ─────────────────────────────────
+    "CLINICIAN_CONTEXT_AMBIGUOUS": {
+        "label":  "Clinician — context ambiguous",
+        "desc":   (
+            "A clinician name that appears in a non-professional context: named as a patient, "
+            "as a complainant, as the subject of an internal complaint or investigation, or "
+            "where their role is unclear (e.g. locum/agency staff). "
+            "Clinicians named in their ordinary professional capacity are NOT redacted."
+        ),
+        "action": "escalate",
+    },
+    "SAFEGUARDING_RISK": {
+        "label":  "Safeguarding concern",
+        "desc":   "Safeguarding referral, MARAC, CP concern, LAC, MASH referral — requires clinical/IG review",
+        "action": "escalate",
+    },
+    "DOMESTIC_ABUSE_CONTEXT": {
+        "label":  "Domestic abuse disclosure",
+        "desc":   "Domestic abuse, coercive control, DASH assessment, MARAC referral — escalate",
+        "action": "escalate",
+    },
+    "CHILD_PROTECTION": {
+        "label":  "Child protection information",
+        "desc":   "CP plan, S47/S17 enquiry, CP conference, LADO — escalate",
+        "action": "escalate",
+    },
+    "SERIOUS_HARM_RISK": {
+        "label":  "Serious harm risk",
+        "desc":   (
+            "Information whose disclosure could cause serious physical or mental harm to the "
+            "patient or a third party (DPA 2018 Sch.3 para.5 / s.15). "
+            "Includes acute active suicide/self-harm risk, credible violence risk, acute psychotic "
+            "risk. Routine historical mental health notes are NOT covered by this exemption."
+        ),
+        "action": "escalate",
+    },
+    "SENSITIVE_CLINICAL_OPINION": {
+        "label":  "Harmful clinical opinion",
+        "desc":   (
+            "Clinical opinion that, if disclosed, could cause serious harm or engages a specific "
+            "exemption — NOT routine clinical opinion, which is the patient's own data and must "
+            "be disclosed. Covers: explicit notes on symptom fabrication / factitious disorder, "
+            "notes recording a credible and current risk of violence by the patient, or opinion "
+            "that would directly identify and potentially harm a named third party."
+        ),
+        "action": "escalate",
+    },
+    "LEGAL_PRIVILEGE": {
+        "label":  "Legal / investigation material",
+        "desc":   (
+            "Material that may attract an exemption under DPA 2018 Sch.3: legal advice, court "
+            "reports, expert witness reports, internal disciplinary or complaints investigations "
+            "(Sch.3 para.19), management forecasting / planning information (Sch.3 para.6), or "
+            "formal negotiation records (Sch.3 para.7). Requires IG / legal review."
+        ),
+        "action": "escalate",
+    },
+    "DPA_SCHEDULE3_EXEMPTION": {
+        "label":  "DPA 2018 Sch.3 — other exemption",
+        "desc":   (
+            "Content that may engage a Schedule 3 DPA 2018 exemption not captured elsewhere: "
+            "research, statistics or history data (Sch.3 para.8); exam scripts before publication "
+            "(Sch.3 para.9); regulatory / supervisory body material (Sch.3 para.10); or data "
+            "from a separate data controller whose provenance is unclear in a shared-care or "
+            "ICB-held record. Requires IG review to identify the applicable head of exemption."
+        ),
+        "action": "escalate",
+    },
+}
+
+
+# =============================================================================
+# LLM prompts
+# =============================================================================
+
+_SAR_SYSTEM = (
+    "You are an NHS Information Governance SAR redaction specialist. "
+    "You respond with valid JSON only. No preamble, no explanation, no markdown."
+)
+
+_SAR_PROMPT_TMPL = """\
+You are an NHS Information Governance officer processing a Subject Access Request (SAR).
+Analyse ONLY the text between the --- markers below.
+Apply UK GDPR / DPA 2018 / ICO guidance and the BMA guidance on access to health records.
+
+━━━ DO NOT FLAG FOR REDACTION ━━━
+{patient_line}\
+• The patient's own name, DOB, NHS number, address, clinical findings, diagnoses,
+  medications and test results — this is their own personal data and MUST be disclosed.
+  NOTE: only the patient's OWN DOB is protected. Any date of birth that differs from
+  the patient's DOB and belongs to a third party (e.g. a perpetrator, next of kin,
+  or misfiled patient) MUST be flagged as THIRD_PARTY_IDENTIFIER or OTHER_PATIENT_DATA.
+• Routine clinical opinion — clinical opinions, assessments and judgements recorded about
+  the patient are the patient's own data. Do NOT escalate them unless they meet the
+  specific "SENSITIVE_CLINICAL_OPINION" criteria below.
+• Clinician names (GP, nurse, consultant, pharmacist, AHP) appearing in their ORDINARY
+  PROFESSIONAL CAPACITY — e.g. signing a letter, recording a consultation, ordering a test.
+  Exception: escalate as CLINICIAN_CONTEXT_AMBIGUOUS if the clinician is named as a
+  patient, as the complainant/subject of a complaint, or in a context where their personal
+  data (not their professional act) is being recorded.
+• NHS Trust, hospital, GP practice, clinic or department names.
+• Standard appointment dates, referral acknowledgements, administrative notices.
+
+━━━ PROPOSE FOR AUTO-REDACTION ━━━
+Copy the EXACT tag name. Redact the minimum span — a name or phrase, not a whole sentence.
+
+THIRD_PARTY_IDENTIFIER   — name or identifying detail of any private individual:
+                           family member, partner, carer, neighbour, friend, employer,
+                           teacher, school contact, or any unnamed member of the public.
+                           This INCLUDES their date of birth, phone number, NHS number,
+                           address, and any other personal data appearing in structured
+                           blocks (e.g. "Perpetrator details:", "Emergency contact:",
+                           "Next of kin:") — redact ALL fields in such blocks, not just
+                           the name. Create a separate entry for EACH field (name, DOB,
+                           phone, address) so each is individually redacted.
+CONFIDENTIAL_DISCLOSURE  — information given in confidence or anonymously by a third party
+                           (ICO guidance: the identity of the third party may be withheld).
+OTHER_PATIENT_DATA       — data clearly belonging to a different patient: misfiled notes,
+                           wrong-patient test results, clinic lists showing other patients.
+                           Redact ALL identifying fields for the other patient including their
+                           name, date of birth, NHS number, address, and any other personal
+                           identifiers — create a SEPARATE entry for each field.
+AGENCY_CONFIDENTIAL_INFO — (a) the name and direct contact details of any social worker,
+                           police officer, housing officer, probation officer or school
+                           staff member named in their professional capacity in a referral
+                           or report — they work for a DIFFERENT data controller and their
+                           personal work details are not the patient's data to receive;
+                           (b) the substantive content of any social work, police, probation
+                           or school report that names or identifies a third party.
+                           Always create SEPARATE entries for the name and the phone
+                           number — never bundle them. If you find a phone number for an
+                           agency professional, you MUST also create a separate entry for
+                           their name, and vice versa.
+INDIRECT_IDENTIFIER      — text that would identify a private third party without naming
+                           them (e.g. "your son at St Peter's Primary", "the neighbour at
+                           No. 14", "your partner who works at the council").
+
+━━━ ESCALATE FOR QUALIFIED HUMAN REVIEW — do NOT auto-redact ━━━
+These require a clinical or IG professional to make an active decision before any action.
+
+CLINICIAN_CONTEXT_AMBIGUOUS — a clinician name appearing in an ambiguous or non-professional
+                              context: named as a patient in this record, named as the subject
+                              of or complainant in a formal complaint or investigation, or
+                              where their role is unclear (locum/agency with no stated role).
+                              IMPORTANT: Documents headed 'Formal Complaint', 'Record of
+                              Complaint Received', 'Patient Complaint' or similar MUST have
+                              any clinician named as the SUBJECT of the complaint escalated
+                              under this tag — even if their name also appears elsewhere in
+                              the document in a professional capacity.
+SAFEGUARDING_RISK           — safeguarding referrals, MARAC discussions, CP concerns,
+                              LAC / MASH referrals. Releasing or withholding requires
+                              a qualified decision; neither is automatic.
+DOMESTIC_ABUSE_CONTEXT      — domestic abuse or coercive control disclosures, DASH risk
+                              assessment results, MARAC referral details.
+CHILD_PROTECTION            — the SUBSTANCE of CP referrals: CP plans, Section 47 or
+                              Section 17 enquiry details, CP conferences, LADO referral
+                              content. Do NOT use this tag for the child's name or DOB —
+                              those are THIRD_PARTY_IDENTIFIER (auto-redact). Only the
+                              risk assessment content and referral narrative is escalated.
+SERIOUS_HARM_RISK           — content that could cause SERIOUS physical or mental harm if
+                              disclosed (DPA 2018 Sch.3 para.5). Applies to ACUTE, ACTIVE
+                              risk only: credible imminent suicide or self-harm risk,
+                              credible current violence risk, acute psychotic risk. Routine
+                              or historical mental health notes do NOT qualify.
+SENSITIVE_CLINICAL_OPINION  — clinical opinion that, if disclosed, could cause serious harm
+                              or identifies a third party harmfully. Specifically:
+                              (a) explicit notes on factitious disorder / symptom fabrication;
+                              (b) opinion recording a credible and current risk of violence
+                              BY the patient; (c) opinion that would directly identify and
+                              harm a named third party. Routine clinical opinion, including
+                              personality disorder diagnoses, is the patient's own data and
+                              must NOT be escalated under this tag.
+LEGAL_PRIVILEGE             — legal advice, court reports, expert witness reports, internal
+                              disciplinary or complaints investigation records (Sch.3 para.19),
+                              management forecasting / planning information (Sch.3 para.6),
+                              or formal negotiation records (Sch.3 para.7).
+DPA_SCHEDULE3_EXEMPTION     — content that may engage a Sch.3 DPA 2018 exemption not listed
+                              above: research/statistics/history data (Sch.3 para.8); exam
+                              scripts before publication (Sch.3 para.9); regulatory body
+                              material (Sch.3 para.10); or data whose originating data
+                              controller is unclear (e.g. shared-care record, ICB-held data).
+
+━━━ OUTPUT RULES ━━━
+• "text": copy EXACTLY as it appears — character for character, minimum span only.
+• "replacement": for auto-redactions only; use the format [REDACTED - reason].
+  Use a plain hyphen (-), not an em-dash or any other character.
+• Never include the patient's own name in any "text" field.
+• For THIRD_PARTY_IDENTIFIER: if a third party's name appears in MORE THAN ONE FORM in this
+  document (e.g. full name "Jane Smith" at first mention, then "Jane" alone in quoted speech),
+  create a SEPARATE entry for EACH verbatim form so every occurrence is captured.
+  Example: one entry with text "Jane Smith", a second with text "Jane" (if "Jane" appears alone).
+• A first name used alone (e.g. "Sandra", "Brian", "Karen") IS a THIRD_PARTY_IDENTIFIER
+  if it refers to a private individual — do not skip it just because a surname is absent.
+• Named children appearing in safeguarding or CP referrals are THIRD_PARTY_IDENTIFIER —
+  auto-redact their name and DOB as separate entries. The CP referral substance is what
+  requires CHILD_PROTECTION escalation, not the child's name itself.
+  Always capture just the child's name as the minimum span (e.g. text: "Lily"), and
+  their approximate DOB as a second separate entry (e.g. text: "2019" or "approximately
+  2019") — never bundle the name and description into one long text string.
+• Escalation and auto-redaction are MUTUALLY EXCLUSIVE. If a passage is listed in
+  "escalations" it MUST NOT also appear in "proposed_redactions". Never double-list.
+
+Output this JSON and nothing else:
+{{
+  "proposed_redactions": [
+    {{
+      "text": "exact verbatim text from the document",
+      "tag": "THIRD_PARTY_IDENTIFIER",
+      "reason": "Brief explanation (one sentence)",
+      "replacement": "[REDACTED - third-party personal data]",
+      "context": "Up to 30 words of surrounding context"
+    }}
+  ],
+  "escalations": [
+    {{
+      "text": "exact verbatim text",
+      "tag": "SAFEGUARDING_RISK",
+      "reason": "Brief explanation (one sentence)",
+      "context": "Up to 30 words of surrounding context"
+    }}
+  ]
+}}
+
+If nothing requires redaction or escalation return exactly:
+{{"proposed_redactions": [], "escalations": []}}
+
+Document excerpt:
+---
+{chunk}
+---"""
+
+
+_CHUNK_TIMEOUT = 120   # seconds to wait for a single LLM chunk response
+
+
+# =============================================================================
+# Internal helpers
+# =============================================================================
+
+def _extract_json(raw: str):
+    if not raw:
+        return None
+
+    # Strategy 1: JSON inside a ```json ... ``` fence (greedy to capture full nested object)
+    m = re.search(r"```(?:json)?\s*(\{.*\})\s*```", raw, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    # Strategy 2: first { ... last }
+    if "{" in raw and "}" in raw:
+        start = raw.index("{")
+        end   = raw.rindex("}") + 1
+        candidate = raw[start:end]
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            # Strategy 3: auto-fix common LLM JSON mistakes then retry
+            fixed = candidate
+            fixed = re.sub(r",\s*([}\]])",    r"\1",      fixed)  # trailing commas
+            fixed = re.sub(r'(?<!")None(?!")',  '"null"',  fixed)  # Python None
+            fixed = re.sub(r'(?<!")True(?!")',  '"true"',  fixed)  # Python True
+            fixed = re.sub(r'(?<!")False(?!")', '"false"', fixed)  # Python False
+            try:
+                return json.loads(fixed)
+            except json.JSONDecodeError:
+                pass
+
+    return None
+
+
+# =============================================================================
+# Public API
+# =============================================================================
+
+def _detect_patient_name(filename: str, text: str = "") -> str:
+    """
+    Try to detect the patient's full name from:
+      1. NHS EPR filename convention: '…SURNAME, Firstname (Title) NHSnum date.ext'
+      2. Common document header patterns: 'Patient: Ms Firstname SURNAME'
+
+    Returns 'Firstname Surname' (title-cased) or empty string if not found.
+    Used as a fallback when the operator has not typed the patient name in the sidebar.
+    """
+    # ── 1. Filename pattern ──────────────────────────────────────────────────
+    # Typical: '2022-09-14_hash_Description SURNAME, Firstname (Ms) 1000 …'
+    m = re.search(
+        r'\b([A-Z]{2,}),\s+([A-Za-z][a-z]+)\s+\((?:Mr|Mrs|Ms|Miss|Dr|Prof)',
+        filename,
+    )
+    if m:
+        return f"{m.group(2)} {m.group(1).title()}"
+
+    # ── 2. Document text header ──────────────────────────────────────────────
+    if text:
+        sample = text[:2000]
+        for pat in (
+            r'Patient:\s+(?:Mr|Mrs|Ms|Miss|Dr|Prof)\.?\s+([A-Za-z][a-z]+)\s+([A-Z][A-Za-z]+)',
+            r'Patient:\s+([A-Za-z][a-z]+)\s+([A-Z]{2,})',
+            r'Name:\s+(?:Mr|Mrs|Ms|Miss|Dr|Prof)\.?\s+([A-Za-z][a-z]+)\s+([A-Z][A-Za-z]+)',
+        ):
+            m = re.search(pat, sample)
+            if m:
+                return f"{m.group(1)} {m.group(2).title()}"
+
+    return ""
+
+
+def _analyse_chunk(chunk: str, model: str, patient_line: str, extra_instructions: str = "") -> tuple:
+    """Send one chunk to the LLM. Returns (result_dict, raw_string)."""
+    user_msg = _SAR_PROMPT_TMPL.format(patient_line=patient_line, chunk=chunk)
+    if extra_instructions:
+        user_msg += f"\n\nADDITIONAL INSTRUCTIONS FOR THIS SESSION ONLY:\n{extra_instructions}"
+
+    def _call():
+        return ollama.chat(
+            model=model,
+            messages=[
+                {"role": "system", "content": _SAR_SYSTEM},
+                {"role": "user",   "content": user_msg},
+            ],
+            format="json",                              # forces valid JSON output for any model
+            options={"temperature": 0.05,
+                     "num_predict": 1024},              # cap output — SAR JSON rarely exceeds ~800 tokens
+        )
+
+    try:
+        ex     = ThreadPoolExecutor(max_workers=1)
+        future = ex.submit(_call)
+        try:
+            resp = future.result(timeout=_CHUNK_TIMEOUT)
+        except FuturesTimeoutError:
+            ex.shutdown(wait=False)   # don't block — let the stalled thread die on its own
+            return (
+                {"proposed_redactions": [], "escalations": [], "parse_ok": False},
+                f"[TIMEOUT] LLM did not respond within {_CHUNK_TIMEOUT}s",
+            )
+        finally:
+            ex.shutdown(wait=False)
+        raw = resp["message"]["content"].strip()
+    except Exception as exc:
+        return {"proposed_redactions": [], "escalations": [], "parse_ok": False}, f"[LLM ERROR] {exc}"
+
+    parsed = _extract_json(raw)
+    if parsed is None:
+        return {"proposed_redactions": [], "escalations": [], "parse_ok": False}, raw
+
+    return {
+        "proposed_redactions": parsed.get("proposed_redactions", []) or [],
+        "escalations":         parsed.get("escalations", [])         or [],
+        "parse_ok":            True,
+    }, raw
+
+
+def _expand_name_redactions(proposed: list, text: str, patient_name: str = "") -> list:
+    """
+    For each THIRD_PARTY_IDENTIFIER redaction that looks like a full name
+    (two or more words), extract each component word and add a separate
+    redaction entry for any that appear STANDALONE elsewhere in the document
+    (i.e. outside the immediate context of the full name).
+
+    This catches cases like: LLM flags "Michelle Granger" but the document
+    later refers to her as just "Michelle" in quoted speech.
+
+    patient_name: the subject of the SAR — name parts matching the patient's
+    own name are never added as new redaction targets.
+    """
+    if not text:
+        return proposed
+
+    # Build a set of the patient's own name tokens to protect from over-redaction.
+    # This prevents e.g. "Sampledata" (shared surname with a family member)
+    # being expanded into a redaction that would erase the patient's own header lines.
+    _pn_tokens: set = set()
+    if patient_name.strip():
+        for tok in patient_name.strip().lower().split():
+            clean_tok = tok.strip(".,;:()[]'\"–—-")
+            if len(clean_tok) >= 3:
+                _pn_tokens.add(clean_tok)
+
+    existing_lower = {(r.get("text") or "").strip().lower() for r in proposed}
+    extra = []
+
+    for item in proposed:
+        if item.get("tag") != "THIRD_PARTY_IDENTIFIER":
+            continue
+        raw = (item.get("text") or "").strip()
+        parts = raw.split()
+        if len(parts) < 2:
+            continue   # already a single word — nothing to expand
+
+        # Only expand strings that look like proper names.
+        _STOPWORDS = {
+            "the", "a", "an", "of", "at", "on", "in", "to", "for", "from", "with",
+            "who", "what", "where", "when", "how", "that", "this", "and", "or",
+            "but", "not", "no", "is", "was", "are", "were", "be", "been", "has",
+            "have", "had", "do", "does", "did", "will", "would", "can", "could",
+            "may", "might", "she", "he", "her", "his", "their", "they", "our",
+            "runs", "post", "lives", "works", "near", "next", "door", "road",
+            "street", "lane", "avenue", "close", "drive", "house", "flat", "office",
+            "woman", "man", "lady", "person", "child", "boy", "girl", "family",
+            "local", "nearby", "down",
+        }
+        for part in parts:
+            # Strip common punctuation that can attach to a name in free text
+            clean = part.strip(".,;:()[]'\"–—-")
+            if len(clean) < 3:
+                continue   # skip initials / very short tokens
+            if clean.lower() in existing_lower:
+                continue   # already being redacted
+            if clean.lower() in _pn_tokens:
+                continue   # part of patient's own name — never redact
+
+            # Only expand parts that look like proper name tokens:
+            # must start with uppercase and not be a generic English word
+            if not (len(clean) >= 3 and clean[0].isupper() and clean.lower() not in _STOPWORDS):
+                continue   # not a proper name token — skip this part
+
+            # Word-boundary search for standalone occurrence
+            pattern = r'(?<!\w)' + re.escape(clean) + r'(?!\w)'
+            matches = list(re.finditer(pattern, text, re.IGNORECASE))
+            if not matches:
+                continue
+
+            # At least one occurrence must be OUTSIDE the span of the full name
+            standalone = False
+            for m in matches:
+                # Build the surrounding window and check full name isn't there
+                window_start = max(0, m.start() - len(raw) - 5)
+                window_end   = min(len(text), m.end() + len(raw) + 5)
+                window       = text[window_start:window_end]
+                if raw.lower() not in window.lower():
+                    standalone = True
+                    break
+
+            if standalone:
+                extra.append({
+                    "text":        clean,
+                    "tag":         "THIRD_PARTY_IDENTIFIER",
+                    "reason":      f"Standalone name-part of third party (expanded from \"{raw}\")",
+                    "replacement": "[REDACTED - third-party personal data]",
+                    "context":     item.get("context", ""),
+                    "approved":    True,
+                })
+                existing_lower.add(clean.lower())
+
+    return proposed + extra
+
+
+# =============================================================================
+# Post-processing: expand agency contacts to catch paired name/phone
+# =============================================================================
+
+def _expand_agency_contacts(proposed: list, text: str) -> list:
+    """
+    When an AGENCY_CONFIDENTIAL_INFO or THIRD_PARTY_IDENTIFIER proposed redaction
+    contains a phone number but the adjacent name was missed (or vice versa), try to
+    locate the missing counterpart in the surrounding text and add it.
+
+    Handles structured blocks like:
+        Social worker: Diane Okafor
+        Direct line: 01925 000055
+    where the LLM may catch one field but not the other.
+    """
+    import re as _re
+
+    _PHONE_PAT = _re.compile(
+        r'\b(\d{5}\s\d{6}|\d{4}\s\d{3}\s\d{4}|\d{11}|\+44[\s\d]{10,13})\b'
+    )
+    _NAME_PAT = _re.compile(
+        r'\b([A-Z][a-z]{1,}(?:\s+[A-Z][a-z]{1,})+)\b'
+    )
+    _AGENCY_TAGS = {"AGENCY_CONFIDENTIAL_INFO", "THIRD_PARTY_IDENTIFIER"}
+
+    existing_lower = {(r.get("text") or "").strip().lower() for r in proposed}
+    lines = text.splitlines()
+    extra = []
+
+    for item in proposed:
+        if item.get("tag") not in _AGENCY_TAGS:
+            continue
+        item_text = (item.get("text") or "").strip()
+
+        # Case A: item is a phone number → look for adjacent name
+        if _PHONE_PAT.fullmatch(item_text.replace(" ", "")):
+            # Find the line containing this phone number
+            for li, line in enumerate(lines):
+                if item_text in line:
+                    # Search ±3 lines for a name pattern
+                    window = lines[max(0, li - 3): li + 4]
+                    for wline in window:
+                        for m in _NAME_PAT.finditer(wline):
+                            candidate = m.group(1)
+                            if candidate.lower() not in existing_lower:
+                                extra.append({
+                                    "text":        candidate,
+                                    "tag":         item.get("tag"),
+                                    "reason":      f"Name associated with agency contact (paired with {item_text})",
+                                    "replacement": "[REDACTED - agency contact]",
+                                    "context":     wline.strip(),
+                                    "approved":    True,
+                                })
+                                existing_lower.add(candidate.lower())
+                    break
+
+        # Case B: item is a name → look for adjacent phone numbers
+        elif _NAME_PAT.fullmatch(item_text):
+            for li, line in enumerate(lines):
+                if item_text in line:
+                    window = lines[max(0, li - 3): li + 4]
+                    for wline in window:
+                        for m in _PHONE_PAT.finditer(wline):
+                            candidate = m.group(0)
+                            if candidate.lower() not in existing_lower:
+                                extra.append({
+                                    "text":        candidate,
+                                    "tag":         item.get("tag"),
+                                    "reason":      f"Phone associated with agency contact (paired with {item_text})",
+                                    "replacement": "[REDACTED - agency contact]",
+                                    "context":     wline.strip(),
+                                    "approved":    True,
+                                })
+                                existing_lower.add(candidate.lower())
+                    break
+
+    return proposed + extra
+
+
+def llm_analyse_document(
+    text: str,
+    model: str,
+    patient_name: str = "",
+    status_cb=None,
+    extra_redactions: str = "",
+    custom_instructions: str = "",
+) -> tuple:
+    """
+    Analyse document text for SAR redactions.
+    Splits long documents into overlapping chunks so the whole document is covered.
+    Returns (result_dict, raw_llm_string).
+
+    status_cb:           optional callable(message: str) for live progress updates.
+    extra_redactions:    newline/comma-separated extra terms to always redact this session.
+    custom_instructions: free-text extra prompt instructions appended this session.
+    """
+    patient_line = ""
+    if patient_name.strip():
+        patient_line = (
+            f"- The patient is {patient_name.strip()} — "
+            "NEVER flag this person's own name or identifiers for redaction\n"
+        )
+
+    # Build session-specific addendum
+    extra_parts = []
+    if extra_redactions.strip():
+        terms = [t.strip() for t in re.split(r"[,\n]+", extra_redactions) if t.strip()]
+        if terms:
+            quoted = ", ".join(f'"{t}"' for t in terms)
+            extra_parts.append(
+                f"EXTRA TERMS TO REDACT (always flag these regardless of other rules): {quoted}\n"
+                "Tag each as THIRD_PARTY_IDENTIFIER unless a more specific tag clearly applies."
+            )
+    if custom_instructions.strip():
+        extra_parts.append(custom_instructions.strip())
+    extra_str = "\n\n".join(extra_parts)
+
+    CHUNK      = 6000   # characters per chunk (~1500 words, ~2-3 GP pages)
+    STRIDE     = 5500   # overlap of 500 chars catches phrases that straddle a boundary
+    MAX_CHUNKS = 8      # analyse up to ~48 000 chars (≈ 12–15 pages)
+
+    chunks = []
+    pos = 0
+    while pos < len(text) and len(chunks) < MAX_CHUNKS:
+        chunks.append(text[pos: pos + CHUNK])
+        pos += STRIDE
+
+    all_proposed, all_escalations, all_raw = [], [], []
+    parse_ok = True
+
+    for idx, chunk in enumerate(chunks, 1):
+        if status_cb:
+            status_cb(
+                f"Analysing chunk {idx}/{len(chunks)} "
+                f"(~{len(chunk):,} chars, up to {_CHUNK_TIMEOUT}s each)..."
+            )
+        result, raw = _analyse_chunk(chunk, model, patient_line, extra_str)
+        all_raw.append(raw)
+        if not result.get("parse_ok"):
+            parse_ok = False
+        all_proposed.extend(result.get("proposed_redactions", []))
+        all_escalations.extend(result.get("escalations", []))
+
+    # ── Post-processing: mutual exclusivity of escalation and auto-redaction ──
+    _escalate_tags = {tag for tag, info in REDACTION_TAGS.items()
+                      if info.get("action") == "escalate"}
+    _esc_texts = {(e.get("text") or "").strip().lower() for e in all_escalations}
+    all_proposed = [
+        p for p in all_proposed
+        if p.get("tag", "") not in _escalate_tags
+        and (p.get("text") or "").strip().lower() not in _esc_texts
+    ]
+
+    # Expand multi-word name redactions to catch first-name-only mentions.
+    # Pass patient_name so the expander never creates a redaction target that
+    # matches the patient's own name parts (e.g. a shared family surname).
+    all_proposed = _expand_name_redactions(all_proposed, text, patient_name)
+    all_proposed = _expand_agency_contacts(all_proposed, text)
+
+    return {
+        "proposed_redactions": all_proposed,
+        "escalations":         all_escalations,
+        "parse_ok":            parse_ok,
+        "chunks_analysed":     len(chunks),
+        "chars_total":         len(text),
+    }, f"\n\n--- CHUNK BREAK ---\n\n".join(all_raw)
+
+
+def apply_text_redactions(text: str, proposed_redactions: list) -> str:
+    """
+    Apply proposed redactions to plain text (not PDF). Returns redacted string.
+
+    Only processes items that are approved (approved=True or key absent, treating
+    absence as approved for backwards-compat) and have a non-empty 'text' field.
+
+    Items are sorted by text length descending so longer phrases are replaced
+    before their component words, avoiding partial-match corruption.
+    """
+    if not text or not proposed_redactions:
+        return text
+
+    # Filter to approved items with both text and replacement fields
+    approved = [
+        item for item in proposed_redactions
+        if item.get("approved", True)
+        and (item.get("text") or "").strip()
+        and (item.get("replacement") or "").strip()
+    ]
+
+    # Sort longest-first to prevent partial-match corruption
+    approved.sort(key=lambda x: len(x["text"]), reverse=True)
+
+    result = text
+    for item in approved:
+        needle      = item["text"].strip()
+        replacement = item["replacement"].strip()
+        # Use word-boundary-aware regex where possible (word chars on both sides)
+        pattern = r'(?<!\w)' + re.escape(needle) + r'(?!\w)'
+        try:
+            result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
+        except re.error:
+            # Fall back to plain string replacement if regex fails
+            result = result.replace(needle, replacement)
+
+    return result
