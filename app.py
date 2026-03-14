@@ -453,22 +453,53 @@ textarea:focus,
     border-color: rgba(0,94,184,.7) !important;
     box-shadow:   0 0 0 2px rgba(0,94,184,.22) !important;
 }
+/* ── Selectbox trigger (closed state) ── */
 .stSelectbox [data-baseweb="select"],
 .stSelectbox > div > div,
-[data-baseweb="select"] {
-    background: rgba(6,18,48,0.88) !important;
-    border:     1px solid rgba(0,94,184,.35) !important;
-    color:      rgba(210,232,255,.95) !important;
-}
-[data-baseweb="select"] [data-baseweb="option"] {
-    background: rgba(6,18,48,0.95) !important;
-    color:      rgba(210,232,255,.9) !important;
-}
-/* Selected value text inside selectbox */
-[data-baseweb="select"] [data-baseweb="single-value"],
-[data-baseweb="select"] div {
+[data-baseweb="select"],
+[data-baseweb="select"] > div {
+    background:   rgba(6,18,48,0.88) !important;
+    border-color: rgba(0,94,184,.35) !important;
     color:                   rgba(210,232,255,.95) !important;
     -webkit-text-fill-color: rgba(210,232,255,.95) !important;
+}
+/* Selected value + placeholder text inside trigger */
+[data-baseweb="select"] [data-baseweb="single-value"],
+[data-baseweb="select"] [data-baseweb="placeholder"],
+[data-baseweb="select"] span,
+[data-baseweb="select"] p {
+    color:                   rgba(210,232,255,.95) !important;
+    -webkit-text-fill-color: rgba(210,232,255,.95) !important;
+}
+/* ── Dropdown popup list (renders in a portal at top of DOM) ── */
+[data-baseweb="popover"],
+[data-baseweb="menu"],
+[role="listbox"],
+ul[data-baseweb="menu"] {
+    background:    rgba(6,18,48,0.97) !important;
+    border:        1px solid rgba(0,94,184,.4) !important;
+    border-radius: 10px !important;
+    box-shadow:    0 8px 32px rgba(0,0,0,.55) !important;
+}
+/* Individual dropdown options */
+[role="option"],
+[data-baseweb="menu-item"],
+li[role="option"] {
+    background:              rgba(6,18,48,0.97) !important;
+    color:                   rgba(210,232,255,.92) !important;
+    -webkit-text-fill-color: rgba(210,232,255,.92) !important;
+}
+[role="option"]:hover,
+[data-baseweb="menu-item"]:hover,
+li[role="option"]:hover {
+    background: rgba(0,94,184,.35) !important;
+    color:                   #fff !important;
+    -webkit-text-fill-color: #fff !important;
+}
+[aria-selected="true"][role="option"] {
+    background: rgba(0,94,184,.5) !important;
+    color:                   #fff !important;
+    -webkit-text-fill-color: #fff !important;
 }
 
 
@@ -2395,38 +2426,147 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
 
             # ── Escalations ──────────────────────────────────────────────────
             if analysis["escalations"]:
-                st.markdown("#### 🔴 Escalations — Clinical / IG Review Required")
-                st.caption(
-                    "These items are **not automatically redacted**. "
-                    "Review each one and decide: tick 'Add to redactions' to redact, "
-                    "or leave unticked to release the text as-is."
+                st.markdown("#### 🔴 Escalations — Requires Clinical / IG Review")
+                st.info(
+                    "These passages were **not automatically redacted** — they need a "
+                    "qualified human decision. Read the flagged text and document context "
+                    "below, then choose an action for each one."
                 )
-                for ei, esc in enumerate(analysis["escalations"]):
-                    tag_info = REDACTION_TAGS.get(esc.get("tag", ""), {})
-                    with st.container(border=True):
-                        c1, c2 = st.columns([1, 2])
-                        with c1:
-                            st.markdown(f"**{tag_info.get('label', esc.get('tag', ''))}**")
-                            st.caption(esc.get("reason", ""))
-                        with c2:
-                            st.code(esc.get("text", ""), language=None)
-                            st.caption(f"*Context:* {esc.get('context', '')}")
 
-                        add_key = f"esc_add_{i}_{ei}"
-                        if st.checkbox("➕ Add to redactions", key=add_key):
-                            existing = {r["text"] for r in analysis["proposed_redactions"]}
-                            t = esc.get("text", "")
-                            if t and t not in existing:
+                _ESC_TAG_DOT = {
+                    "CLINICIAN_CONTEXT_AMBIGUOUS": "🟡",
+                    "SAFEGUARDING_RISK":           "🔴",
+                    "DOMESTIC_ABUSE_CONTEXT":      "🔴",
+                    "CHILD_PROTECTION":            "🔴",
+                    "SERIOUS_HARM_RISK":           "🔴",
+                    "SENSITIVE_CLINICAL_OPINION":  "🟠",
+                    "LEGAL_PRIVILEGE":             "🟠",
+                    "DPA_SCHEDULE3_EXEMPTION":     "🟠",
+                }
+                _DEC_OPTS = [
+                    "⚠️ Awaiting decision",
+                    "🔴 Redact this passage",
+                    "✅ Release as-is",
+                ]
+                _n_esc = len(analysis["escalations"])
+
+                for ei, esc in enumerate(analysis["escalations"]):
+                    tag      = esc.get("tag", "")
+                    tag_info = REDACTION_TAGS.get(tag, {})
+                    label    = tag_info.get("label", tag)
+                    desc     = tag_info.get("desc", "")
+                    dot      = _ESC_TAG_DOT.get(tag, "🟡")
+                    flagged  = esc.get("text", "")
+                    reason   = esc.get("reason", "")
+                    context  = esc.get("context", "")
+                    dec_key  = f"esc_dec_{i}_{ei}"
+
+                    with st.container(border=True):
+                        # ── Card header ──────────────────────────────────────
+                        hcol1, hcol2 = st.columns([5, 1])
+                        with hcol1:
+                            st.markdown(f"##### {dot} {label}")
+                        with hcol2:
+                            st.caption(f"*{ei + 1} / {_n_esc}*")
+
+                        # What this category means
+                        if desc:
+                            st.caption(f"📋 **Category:** {desc}")
+
+                        st.markdown("---")
+
+                        # ── Flagged text + AI reasoning ──────────────────────
+                        fcol, rcol = st.columns([3, 2])
+                        with fcol:
+                            st.markdown("**🚩 Flagged passage**")
+                            st.code(flagged or "*(no text captured)*", language=None)
+                        with rcol:
+                            st.markdown("**🤖 AI reasoning**")
+                            if reason:
+                                st.markdown(
+                                    f"<div style='background:rgba(0,94,184,.12);"
+                                    f"border-left:3px solid rgba(0,94,184,.6);"
+                                    f"border-radius:6px;padding:10px 14px;"
+                                    f"color:rgba(210,232,255,.9);font-size:.88rem'>"
+                                    f"{reason}</div>",
+                                    unsafe_allow_html=True,
+                                )
+                            else:
+                                st.caption("*(no reasoning recorded)*")
+
+                        # ── Inline document context preview ──────────────────
+                        doc_text = analysis.get("text", "")
+                        _ctx_found = False
+                        if doc_text and flagged:
+                            _idx = doc_text.find(flagged)
+                            if _idx == -1:
+                                # Try matching the first 50 chars case-insensitively
+                                _probe = flagged[:50].lower()
+                                _idx   = doc_text.lower().find(_probe)
+                            if _idx != -1:
+                                _start   = max(0, _idx - 350)
+                                _end     = min(len(doc_text), _idx + len(flagged) + 350)
+                                _snippet = doc_text[_start:_end]
+                                if _start > 0:
+                                    _snippet = "…" + _snippet
+                                if _end < len(doc_text):
+                                    _snippet = _snippet + "…"
+                                with st.expander("📄 Show surrounding document context", expanded=False):
+                                    st.caption(
+                                        "The passage below is extracted from the original document "
+                                        "around the flagged text, to help you judge the full context."
+                                    )
+                                    st.code(_snippet, language=None)
+                                _ctx_found = True
+
+                        if not _ctx_found and context:
+                            with st.expander("📄 Context (from AI)", expanded=False):
+                                st.code(context, language=None)
+
+                        st.markdown("---")
+
+                        # ── Decision control ─────────────────────────────────
+                        dcol1, dcol2 = st.columns([2, 3])
+                        with dcol1:
+                            st.markdown("**Your decision:**")
+                        with dcol2:
+                            decision = st.selectbox(
+                                "Decision",
+                                options=_DEC_OPTS,
+                                key=dec_key,
+                                label_visibility="collapsed",
+                                help=(
+                                    "• Awaiting decision — no action yet  \n"
+                                    "• Redact this passage — adds to the redaction list below  \n"
+                                    "• Release as-is — text will appear in the final bundle"
+                                ),
+                            )
+
+                        # Apply decision
+                        _existing_texts = {r["text"] for r in analysis["proposed_redactions"]}
+                        if decision == _DEC_OPTS[1]:   # Redact
+                            if flagged and flagged not in _existing_texts:
                                 analysis["proposed_redactions"].append({
-                                    "text":        t,
-                                    "tag":         esc.get("tag", ""),
-                                    "reason":      esc.get("reason", ""),
-                                    "replacement": f"[REDACTED - {esc.get('reason', 'escalation')}]",
-                                    "context":     esc.get("context", ""),
+                                    "text":        flagged,
+                                    "tag":         tag,
+                                    "reason":      reason,
+                                    "replacement": f"[REDACTED – {reason or label}]",
+                                    "context":     context,
                                     "approved":    True,
                                 })
                                 if f"editor_{i}" in st.session_state:
                                     del st.session_state[f"editor_{i}"]
+                        elif decision == _DEC_OPTS[2]:  # Release
+                            # Remove from proposed_redactions if previously added
+                            before = len(analysis["proposed_redactions"])
+                            analysis["proposed_redactions"] = [
+                                r for r in analysis["proposed_redactions"]
+                                if not (r.get("text") == flagged and r.get("tag") == tag)
+                            ]
+                            if len(analysis["proposed_redactions"]) != before:
+                                if f"editor_{i}" in st.session_state:
+                                    del st.session_state[f"editor_{i}"]
+
                 st.divider()
 
             # ── Proposed redactions table ─────────────────────────────────────
