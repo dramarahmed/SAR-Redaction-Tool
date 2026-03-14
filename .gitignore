@@ -1,0 +1,20 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# App output
+output/
+redacted/
+*.zip
+
+# Streamlit
+.streamlit/
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
