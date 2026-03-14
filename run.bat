@@ -14,11 +14,15 @@ echo  ==========================================
 echo.
 
 :: ── Ensure Tesseract is on the PATH ──────────────────────────
-set "TESS_DEFAULT=C:\Program Files\Tesseract-OCR"
+:: Check both 64-bit and 32-bit install locations
 where tesseract >nul 2>&1
 if errorlevel 1 (
-    if exist "%TESS_DEFAULT%\tesseract.exe" (
-        set "PATH=%PATH%;%TESS_DEFAULT%"
+    if exist "%ProgramFiles%\Tesseract-OCR\tesseract.exe" (
+        set "PATH=%PATH%;%ProgramFiles%\Tesseract-OCR"
+    ) else (
+        if exist "%ProgramFiles(x86)%\Tesseract-OCR\tesseract.exe" (
+            set "PATH=%PATH%;%ProgramFiles(x86)%\Tesseract-OCR"
+        )
     )
 )
 
@@ -50,8 +54,9 @@ if errorlevel 1 (
 )
 
 :: ── Free port %PORT% if already in use ───────────────────────
+:: Filter to LISTENING rows only to avoid killing unrelated processes
 for /f "tokens=5" %%a in (
-    'netstat -aon 2^>nul ^| findstr /r ":%PORT% "'
+    'netstat -aon 2^>nul ^| findstr /r ":%PORT%.*LISTENING"'
 ) do (
     taskkill /f /pid %%a >nul 2>&1
 )
@@ -68,7 +73,8 @@ if errorlevel 1 (
 )
 
 :: ── Start browser opener in background ───────────────────────
-start /b "" "%PYTHON%" "%BROWSER%"
+:: Pass port as argument so open_browser.py stays in sync with run.bat
+start /b "" "%PYTHON%" "%BROWSER%" %PORT%
 
 :: ── Launch Streamlit (blocking) ──────────────────────────────
 echo  Starting app -- browser will open automatically...
@@ -84,7 +90,7 @@ echo.
 echo.
 echo  App stopped.
 for /f "tokens=5" %%a in (
-    'netstat -aon 2^>nul ^| findstr /r ":%PORT% "'
+    'netstat -aon 2^>nul ^| findstr /r ":%PORT%.*LISTENING"'
 ) do (
     taskkill /f /pid %%a >nul 2>&1
 )

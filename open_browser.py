@@ -8,9 +8,9 @@ import subprocess
 import sys
 import time
 
-URL  = "http://127.0.0.1:8501"
+PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8501
+URL  = f"http://127.0.0.1:{PORT}"
 HOST = "127.0.0.1"
-PORT = 8501
 
 for _ in range(90):
     try:

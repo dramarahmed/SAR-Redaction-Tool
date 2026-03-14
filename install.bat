@@ -8,7 +8,7 @@ setlocal EnableDelayedExpansion
 net session >nul 2>&1
 if %errorlevel% neq 0 (
     echo  Requesting administrator privileges...
-    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs -WorkingDirectory '%~dp0'"
+    powershell -NoProfile -Command "Start-Process -FilePath \"%~f0\" -Verb RunAs -WorkingDirectory \"%~dp0\""
     exit /b
 )
 
@@ -42,35 +42,59 @@ echo   Selected model: %LLM_MODEL%
 echo  -------------------------------------------------------
 echo.
 
-:: Models go in Ollama's default location - no path to configure
-set "OLLAMA_MODELS=%USERPROFILE%\.ollama\models"
-
 :: =============================================================
 ::  Step 1: Python  (bypass Windows App Execution Alias)
 :: =============================================================
 echo  [1/6] Checking Python...
 
-:: Search known install locations - ignore WindowsApps (Store alias)
+:: Try Windows Python Launcher first -- handles any installed version
 set "PYTHON_EXE="
-for %%P in (
-    "%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
-    "%LOCALAPPDATA%\Programs\Python\Python311\python.exe"
-    "%LOCALAPPDATA%\Programs\Python\Python310\python.exe"
-    "C:\Python312\python.exe"
-    "C:\Python311\python.exe"
-    "C:\Python310\python.exe"
-    "C:\Program Files\Python312\python.exe"
-    "C:\Program Files\Python311\python.exe"
-) do (
-    if exist %%P (
-        if not defined PYTHON_EXE set "PYTHON_EXE=%%~P"
+where py >nul 2>&1
+if not errorlevel 1 (
+    for /f "delims=" %%P in ('py -3 -c "import sys; print(sys.executable)" 2^>nul') do (
+        if not defined PYTHON_EXE (
+            echo "%%P" | findstr /i "WindowsApps" >nul 2>&1
+            if errorlevel 1 set "PYTHON_EXE=%%P"
+        )
+    )
+)
+
+:: Fall back to known install locations (Python 3.10-3.13, user and system)
+if not defined PYTHON_EXE (
+    for %%P in (
+        "%LOCALAPPDATA%\Programs\Python\Python313\python.exe"
+        "%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
+        "%LOCALAPPDATA%\Programs\Python\Python311\python.exe"
+        "%LOCALAPPDATA%\Programs\Python\Python310\python.exe"
+        "C:\Python313\python.exe"
+        "C:\Python312\python.exe"
+        "C:\Python311\python.exe"
+        "C:\Python310\python.exe"
+        "%ProgramFiles%\Python313\python.exe"
+        "%ProgramFiles%\Python312\python.exe"
+        "%ProgramFiles%\Python311\python.exe"
+        "%ProgramFiles%\Python310\python.exe"
+    ) do (
+        if exist %%P (
+            if not defined PYTHON_EXE set "PYTHON_EXE=%%~P"
+        )
     )
 )
 
 if not defined PYTHON_EXE (
-    echo        Not found.  Installing Python 3.12 via winget...
-    winget install --id Python.Python.3.12 -e --silent ^
-        --accept-source-agreements --accept-package-agreements
+    echo        Not found.  Checking for winget...
+    where winget >nul 2>&1
+    if errorlevel 1 (
+        echo.
+        echo  ERROR: Python not found and winget is not available on this PC.
+        echo  Please install Python 3.10 or later from https://python.org
+        echo  Tick "Add Python to PATH" during installation, then re-run this script.
+        echo.
+        pause
+        exit /b 1
+    )
+    echo        Installing Python 3.12 via winget...
+    winget install --id Python.Python.3.12 -e --silent --accept-source-agreements --accept-package-agreements
     if errorlevel 1 (
         echo.
         echo  ERROR: Could not install Python automatically.
@@ -79,9 +103,33 @@ if not defined PYTHON_EXE (
         pause
         exit /b 1
     )
-    :: winget installs to LOCALAPPDATA - set the path for this session
-    set "PYTHON_EXE=%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
+    :: Add expected paths to this session so re-detection can find it
     set "PATH=%LOCALAPPDATA%\Programs\Python\Python312;%LOCALAPPDATA%\Programs\Python\Python312\Scripts;%PATH%"
+    :: Re-detect (winget registers py launcher so try that first)
+    where py >nul 2>&1
+    if not errorlevel 1 (
+        for /f "delims=" %%P in ('py -3 -c "import sys; print(sys.executable)" 2^>nul') do (
+            if not defined PYTHON_EXE set "PYTHON_EXE=%%P"
+        )
+    )
+    if not defined PYTHON_EXE (
+        for %%P in (
+            "%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
+            "%LOCALAPPDATA%\Programs\Python\Python313\python.exe"
+            "%ProgramFiles%\Python312\python.exe"
+        ) do (
+            if exist %%P (
+                if not defined PYTHON_EXE set "PYTHON_EXE=%%~P"
+            )
+        )
+    )
+    if not defined PYTHON_EXE (
+        echo.
+        echo  ERROR: Python was installed but could not be located.
+        echo  Please restart this script, or install Python manually from https://python.org
+        pause
+        exit /b 1
+    )
 )
 
 echo        Found: %PYTHON_EXE%
@@ -94,9 +142,18 @@ echo.
 echo  [2/6] Checking Ollama...
 where ollama >nul 2>&1
 if errorlevel 1 (
-    echo        Not found.  Installing Ollama via winget...
-    winget install --id Ollama.Ollama -e --silent ^
-        --accept-source-agreements --accept-package-agreements
+    echo        Not found.  Checking for winget...
+    where winget >nul 2>&1
+    if errorlevel 1 (
+        echo.
+        echo  ERROR: Ollama not found and winget is not available on this PC.
+        echo  Please install Ollama from https://ollama.com then re-run this script.
+        echo.
+        pause
+        exit /b 1
+    )
+    echo        Installing Ollama via winget...
+    winget install --id Ollama.Ollama -e --silent --accept-source-agreements --accept-package-agreements
     if errorlevel 1 (
         echo.
         echo  ERROR: Could not install Ollama automatically.
@@ -104,9 +161,17 @@ if errorlevel 1 (
         pause
         exit /b 1
     )
-    timeout /t 5 /nobreak >nul
     :: Ollama installer adds itself to PATH but current session won't see it yet
     set "PATH=%LOCALAPPDATA%\Programs\Ollama;%PATH%"
+    :: Ollama installer is async -- wait for the binary to appear on disk
+    echo        Waiting for Ollama to finish installing...
+    timeout /t 10 /nobreak >nul
+    where ollama >nul 2>&1
+    if errorlevel 1 (
+        echo  WARNING: Ollama may not have finished installing yet.
+        echo  If the next steps fail, close this window and re-run INSTALL.bat.
+        echo.
+    )
 )
 ollama --version
 echo.
@@ -115,30 +180,47 @@ echo.
 ::  Step 3: Tesseract OCR  (for image / scanned-PDF support)
 :: =============================================================
 echo  [3/6] Checking Tesseract OCR...
-set "TESS_DEFAULT=C:\Program Files\Tesseract-OCR"
+set "TESS_DEFAULT=%ProgramFiles%\Tesseract-OCR"
+set "TESS_X86=%ProgramFiles(x86)%\Tesseract-OCR"
 where tesseract >nul 2>&1
 if errorlevel 1 (
     if exist "%TESS_DEFAULT%\tesseract.exe" (
         echo        Found at default path -- adding to PATH...
-        setx PATH "%PATH%;%TESS_DEFAULT%" >nul 2>&1
+        :: Use PowerShell to append to Machine PATH safely (avoids setx 1024-char limit)
+        powershell -NoProfile -Command "$p=[Environment]::GetEnvironmentVariable('PATH','Machine'); if ($p -notlike '*Tesseract-OCR*') { [Environment]::SetEnvironmentVariable('PATH',$p+';%TESS_DEFAULT%','Machine') }" >nul 2>&1
         set "PATH=%PATH%;%TESS_DEFAULT%"
     ) else (
-        echo        Not found.  Installing Tesseract OCR via winget...
-        winget install -e --id UB-Mannheim.TesseractOCR --silent ^
-            --accept-source-agreements --accept-package-agreements
-        if errorlevel 1 (
-            echo.
-            echo  WARNING: Tesseract auto-install failed.
-            echo  Download manually from:
-            echo    https://github.com/UB-Mannheim/tesseract/wiki
-            echo  Install to: %TESS_DEFAULT%
-            echo  Then re-run this script.
-            echo.
+        if exist "%TESS_X86%\tesseract.exe" (
+            echo        Found at 32-bit path -- adding to PATH...
+            powershell -NoProfile -Command "$p=[Environment]::GetEnvironmentVariable('PATH','Machine'); if ($p -notlike '*Tesseract-OCR*') { [Environment]::SetEnvironmentVariable('PATH',$p+';%TESS_X86%','Machine') }" >nul 2>&1
+            set "PATH=%PATH%;%TESS_X86%"
         ) else (
-            if exist "%TESS_DEFAULT%\tesseract.exe" (
-                setx PATH "%PATH%;%TESS_DEFAULT%" >nul 2>&1
-                set "PATH=%PATH%;%TESS_DEFAULT%"
-                echo        Tesseract installed and added to PATH.
+            echo        Not found.  Installing Tesseract OCR via winget...
+            where winget >nul 2>&1
+            if errorlevel 1 (
+                echo  WARNING: winget not available.  Tesseract OCR could not be installed automatically.
+                echo  Download manually from:
+                echo    https://github.com/UB-Mannheim/tesseract/wiki
+                echo  Install to: %TESS_DEFAULT%
+                echo  Then re-run this script.
+                echo.
+            ) else (
+                winget install -e --id UB-Mannheim.TesseractOCR --silent --accept-source-agreements --accept-package-agreements
+                if errorlevel 1 (
+                    echo.
+                    echo  WARNING: Tesseract auto-install failed.
+                    echo  Download manually from:
+                    echo    https://github.com/UB-Mannheim/tesseract/wiki
+                    echo  Install to: %TESS_DEFAULT%
+                    echo  Then re-run this script.
+                    echo.
+                ) else (
+                    if exist "%TESS_DEFAULT%\tesseract.exe" (
+                        powershell -NoProfile -Command "$p=[Environment]::GetEnvironmentVariable('PATH','Machine'); if ($p -notlike '*Tesseract-OCR*') { [Environment]::SetEnvironmentVariable('PATH',$p+';%TESS_DEFAULT%','Machine') }" >nul 2>&1
+                        set "PATH=%PATH%;%TESS_DEFAULT%"
+                        echo        Tesseract installed and added to PATH.
+                    )
+                )
             )
         )
     )
@@ -180,11 +262,7 @@ echo.
 :: =============================================================
 echo  [5/6] Downloading AI model: %LLM_MODEL%
 echo        This is a one-time download -- could take 10-30 minutes.
-echo        Models stored in: %OLLAMA_MODELS%
 echo.
-
-:: Save chosen model so run.bat can use it
-setx SAR_LLM_MODEL "%LLM_MODEL%" >nul 2>&1
 
 :: Start Ollama serve in background so we can pull/check
 tasklist 2>nul | findstr /i "ollama.exe" >nul
@@ -194,7 +272,8 @@ if errorlevel 1 (
 )
 
 :: Check if model is already present before downloading
-ollama list 2>nul | findstr /i "%LLM_MODEL%" >nul
+:: Use trailing space to avoid substring matches (e.g. qwen2.5:7b vs qwen2.5:72b)
+ollama list 2>nul | findstr /i /c:"%LLM_MODEL% " >nul
 if errorlevel 1 (
     echo        Model not found locally.  Downloading now...
     ollama pull %LLM_MODEL%
@@ -215,7 +294,12 @@ echo.
 :: =============================================================
 echo  [6/6] Creating desktop shortcut...
 powershell -NoProfile -Command "$ws = New-Object -ComObject WScript.Shell; $lnk = $ws.CreateShortcut([Environment]::GetFolderPath('Desktop') + '\SAR Redaction Tool.lnk'); $lnk.TargetPath = '%~dp0run.bat'; $lnk.WorkingDirectory = '%~dp0'; $lnk.IconLocation = 'shell32.dll,23'; $lnk.Description = 'SAR Redaction Tool'; $lnk.Save()"
-echo        Shortcut created on Desktop.
+if errorlevel 1 (
+    echo  WARNING: Could not create desktop shortcut automatically.
+    echo  To launch manually: right-click run.bat ^> Send to ^> Desktop (create shortcut^)
+) else (
+    echo        Shortcut created on Desktop.
+)
 echo.
 
 :: =============================================================
