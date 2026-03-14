@@ -1240,6 +1240,422 @@ def build_bundle(proc_docs, sar_ref="", operator="", date_str="") -> fitz.Docume
 
 
 # =============================================================================
+# INSURANCE FORM FILLER — helpers
+# =============================================================================
+
+_FF_SYSTEM = (
+    "You are a medical form-filling assistant for an NHS GP practice. "
+    "You respond with valid JSON only. No preamble, no explanation, no markdown."
+)
+
+_FF_EXTRACT_PROMPT = """\
+You are analysing text extracted by OCR from a scanned medical insurance or GP report form.
+Identify EVERY field or question that needs to be completed on this form.
+Look for: field labels followed by blank lines/spaces, numbered questions, table rows with labels.
+
+For EACH field return one JSON object with these keys:
+- "label"             : exact text of the field label as it appears (trim trailing colons/underscores/spaces)
+- "field_type"        : "text" | "date" | "yes_no" | "number" | "checkboxes" | "signature" | "textarea"
+- "needs_manual_input": true if this info is unlikely to be in a patient medical record
+  (e.g. policy number, insurer name/address, claim reference, witness, authorisation signature)
+- "manual_hint"       : (only if needs_manual_input=true) short guidance for the user
+
+Return ONLY this JSON — nothing else:
+{{"fields": [...]}}
+
+Form text (OCR extracted):
+---
+{form_text}
+---"""
+
+_FF_ANSWER_PROMPT = """\
+You are completing a medical form for patient: {patient_name}.
+
+Using ONLY the patient record text provided below, answer each form field as concisely as a form requires.
+- If the record contains the answer, provide it.
+- For dates use DD/MM/YYYY format.
+- If the record does NOT clearly contain the answer, set "answer" to null.
+- In "evidence" copy the exact sentence/phrase from the record that supports your answer.
+- Set confidence: "high" (clearly stated), "medium" (inferred), "low" (uncertain), "none" (not found).
+
+Fields to complete (JSON):
+{fields_json}
+
+Patient record:
+---
+{epr_text}
+---
+
+Return ONLY this JSON:
+{{"answers": [
+  {{"label": "...", "answer": "..." or null, "evidence": "...", "confidence": "high|medium|low|none"}}
+]}}"""
+
+
+def extract_form_fields_llm(form_text: str, model: str) -> list:
+    """Ask LLM to identify all fillable fields in the form. Returns list of field dicts."""
+    prompt = _FF_EXTRACT_PROMPT.format(form_text=form_text[:8000])
+    try:
+        ex     = ThreadPoolExecutor(max_workers=1)
+        future = ex.submit(
+            ollama.chat,
+            model=model,
+            messages=[
+                {"role": "system", "content": _FF_SYSTEM},
+                {"role": "user",   "content": prompt},
+            ],
+            format="json",
+            options={"temperature": 0.05, "num_predict": 2048},
+        )
+        try:
+            resp = future.result(timeout=120)
+        except FuturesTimeoutError:
+            ex.shutdown(wait=False)
+            return []
+        finally:
+            ex.shutdown(wait=False)
+        parsed = _extract_json(resp["message"]["content"].strip())
+        if parsed and "fields" in parsed:
+            return parsed["fields"] or []
+    except Exception:
+        pass
+    return []
+
+
+def answer_fields_from_epr(
+    fields: list,
+    epr_text: str,
+    patient_name: str,
+    model: str,
+    status_cb=None,
+) -> list:
+    """Ask LLM to answer all form fields using EPR records. Returns enriched field dicts."""
+    BATCH      = 8
+    epr_sample = epr_text[:14000]
+    answered   = []
+
+    for batch_start in range(0, len(fields), BATCH):
+        batch         = fields[batch_start : batch_start + BATCH]
+        auto_fields   = [f for f in batch if not f.get("needs_manual_input")]
+        manual_fields = [f for f in batch if f.get("needs_manual_input")]
+
+        if status_cb:
+            status_cb(
+                f"Answering fields {batch_start + 1}–"
+                f"{min(batch_start + BATCH, len(fields))} of {len(fields)}…"
+            )
+
+        # Manual fields — mark for user input immediately
+        for f in manual_fields:
+            f = dict(f)
+            f.update({"answer": None, "evidence": "", "confidence": "none",
+                      "approved": False, "final_answer": ""})
+            answered.append(f)
+
+        if not auto_fields:
+            continue
+
+        fields_json = json.dumps(
+            [{"label": f.get("label", ""), "field_type": f.get("field_type", "text")}
+             for f in auto_fields],
+            indent=2,
+        )
+        prompt = _FF_ANSWER_PROMPT.format(
+            patient_name=patient_name or "the patient",
+            fields_json=fields_json,
+            epr_text=epr_sample,
+        )
+        try:
+            ex     = ThreadPoolExecutor(max_workers=1)
+            future = ex.submit(
+                ollama.chat,
+                model=model,
+                messages=[
+                    {"role": "system", "content": _FF_SYSTEM},
+                    {"role": "user",   "content": prompt},
+                ],
+                format="json",
+                options={"temperature": 0.05, "num_predict": 2048},
+            )
+            try:
+                resp = future.result(timeout=120)
+            except FuturesTimeoutError:
+                ex.shutdown(wait=False)
+                resp = None
+            finally:
+                ex.shutdown(wait=False)
+
+            ans_map = {}
+            if resp:
+                parsed = _extract_json(resp["message"]["content"].strip())
+                if parsed and "answers" in parsed:
+                    ans_map = {a.get("label", ""): a for a in parsed["answers"]}
+
+            for f in auto_fields:
+                f   = dict(f)
+                ans = ans_map.get(f.get("label", ""), {})
+                f["answer"]       = ans.get("answer")
+                f["evidence"]     = ans.get("evidence", "")
+                f["confidence"]   = ans.get("confidence", "none")
+                f["approved"]     = bool(f["answer"])
+                f["final_answer"] = f["answer"] or ""
+                answered.append(f)
+
+        except Exception:
+            for f in auto_fields:
+                f = dict(f)
+                f.update({"answer": None, "evidence": "", "confidence": "none",
+                          "approved": False, "final_answer": ""})
+                answered.append(f)
+
+    # Restore original field order
+    label_to_ans = {f.get("label", ""): f for f in answered}
+    return [label_to_ans.get(f.get("label", ""), f) for f in fields]
+
+
+def _find_label_in_ocr(ocr_data: dict, label: str):
+    """Return (x, y, w, h) pixel bbox of the label in pytesseract data, or None."""
+    if not ocr_data:
+        return None
+    label_words = [w.lower() for w in label.split() if w.strip()]
+    if not label_words:
+        return None
+    texts = [ocr_data["text"][i].lower().strip() for i in range(len(ocr_data["text"]))]
+    confs = [int(ocr_data["conf"][i]) for i in range(len(ocr_data["conf"]))]
+
+    # Try sequences of decreasing length
+    for attempt_len in range(min(len(label_words), 4), 0, -1):
+        seq = label_words[:attempt_len]
+        for i in range(len(texts) - attempt_len + 1):
+            if confs[i] < 20:
+                continue
+            if all(texts[i + j] == seq[j] for j in range(attempt_len)):
+                last_i = i + attempt_len - 1
+                x  = ocr_data["left"][i]
+                y  = ocr_data["top"][i]
+                x2 = ocr_data["left"][last_i] + ocr_data["width"][last_i]
+                h  = max(ocr_data["height"][i : last_i + 1])
+                return x, y, x2 - x, h
+    return None
+
+
+def _ingest_form(uploaded_file) -> tuple:
+    """
+    Ingest a scanned insurance form (PDF / image).
+    Returns (fitz.Document | None, extracted_text, error_msg, has_text_layer).
+    """
+    name = uploaded_file.name
+    ext  = name.rsplit(".", 1)[-1].lower()
+    data = uploaded_file.read()
+
+    try:
+        if ext == "pdf":
+            doc        = fitz.open(stream=data, filetype="pdf")
+            text       = "".join(p.get_text() for p in doc)
+            has_native = bool(text.strip())
+            if not has_native and TESSERACT_AVAILABLE and PIL_AVAILABLE:
+                parts = []
+                for page in doc:
+                    pix = page.get_pixmap(dpi=200)
+                    img = PILImage.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                    parts.append(pytesseract.image_to_string(img))
+                text = "\n".join(parts)
+            return doc, text, "", has_native
+
+        elif ext in ("jpg", "jpeg", "png", "tiff", "tif", "bmp"):
+            if not PIL_AVAILABLE:
+                return None, "", "Pillow not installed — cannot open image files.", False
+            img    = PILImage.open(io.BytesIO(data)).convert("RGB")
+            buf    = io.BytesIO()
+            img.save(buf, format="PDF", resolution=150)
+            buf.seek(0)
+            doc    = fitz.open(stream=buf.read(), filetype="pdf")
+            text   = pytesseract.image_to_string(img) if TESSERACT_AVAILABLE else ""
+            return doc, text, "", False
+
+        else:
+            return None, "", f"Unsupported form format: .{ext}", False
+
+    except Exception as exc:
+        return None, "", str(exc), False
+
+
+def _append_summary_page(doc: fitz.Document, answered_fields: list):
+    """Append a formatted Q&A summary page to doc (in-place)."""
+    PAGE_W, PAGE_H = 595, 842
+    MX, MY         = 40, 70
+    LH             = 17
+
+    def _new_pg(title="COMPLETED FORM — ANSWER SUMMARY"):
+        p = doc.new_page(width=PAGE_W, height=PAGE_H)
+        p.draw_rect(fitz.Rect(0, 0, PAGE_W, 48), color=NHS_BLUE, fill=NHS_BLUE)
+        p.insert_text((MX, 32), title, fontsize=12, color=WHITE, fontname="helv")
+        return p, MY + 8
+
+    page, y = _new_pg()
+
+    for field in answered_fields:
+        label  = (field.get("label") or "—")[:90]
+        answer = (field.get("final_answer") or "").strip() or "[NOT COMPLETED]"
+        conf   = field.get("confidence", "none")
+        ev     = (field.get("evidence") or "")[:240]
+
+        need_h = LH * 2 + (10 * (1 + len(ev) // 90)) + 12
+        if y + need_h > PAGE_H - 40:
+            page, y = _new_pg("COMPLETED FORM — ANSWER SUMMARY (cont.)")
+
+        page.insert_text((MX, y), label, fontsize=8, color=GREY, fontname="helv")
+        y += LH - 3
+
+        marker = {"high": "✓", "medium": "~", "low": "?", "none": "—"}.get(conf, "")
+        page.insert_text(
+            (MX + 8, y),
+            f"{marker}  {answer}"[:95],
+            fontsize=10, color=BLACK, fontname="helv",
+        )
+        y += LH
+
+        if ev:
+            for i in range(0, min(len(ev), 240), 90):
+                page.insert_text(
+                    (MX + 8, y), ev[i : i + 90],
+                    fontsize=7, color=GREY, fontname="helv",
+                )
+                y += 10
+
+        page.draw_line((MX, y + 2), (PAGE_W - MX, y + 2), color=LT_GREY, width=0.4)
+        y += 9
+
+
+def build_filled_form_pdf(
+    form_doc: fitz.Document,
+    answered_fields: list,
+    has_text_layer: bool = False,
+) -> fitz.Document:
+    """
+    Return a new fitz.Document with answers overlaid on the form pages,
+    plus a Q&A summary page appended.
+    Uses PIL image overlay for scanned forms; text insertion for native PDFs.
+    """
+    DPI   = 150
+    SCALE = DPI / 72.0
+    BLUE  = (0, 60, 180)          # PIL colour (RGB)
+    BFITZ = (0.0, 0.25, 0.75)    # fitz colour (0-1)
+    FS    = 8.5
+
+    out = fitz.open()
+
+    # Try to load a font for PIL rendering (Windows: Arial; fallback: default)
+    _pil_font = None
+    if PIL_AVAILABLE:
+        try:
+            from PIL import ImageFont as _PILFont
+            _pil_font = _PILFont.truetype("arial.ttf", 14)
+        except Exception:
+            try:
+                from PIL import ImageFont as _PILFont
+                _pil_font = _PILFont.load_default()
+            except Exception:
+                _pil_font = None
+
+    for page_num, page in enumerate(form_doc):
+        if has_text_layer:
+            # ── Native PDF: use search_for + insert_text ────────────────────
+            new_pg = out.new_page(width=page.rect.width, height=page.rect.height)
+            new_pg.show_pdf_page(new_pg.rect, form_doc, page_num)
+            pw = page.rect.width
+
+            for field in answered_fields:
+                final = (field.get("final_answer") or "").strip()
+                label = (field.get("label") or "").strip()
+                if not final or not label:
+                    continue
+
+                rect = None
+                for attempt in [label, label[:50], label[:30],
+                                " ".join(label.split()[:3]),
+                                " ".join(label.split()[:2])]:
+                    attempt = attempt.strip(": _")
+                    if len(attempt) < 3:
+                        continue
+                    rects = page.search_for(attempt)
+                    if rects:
+                        rect = rects[0]
+                        break
+
+                if not rect:
+                    continue
+
+                space_r  = pw - rect.x1 - 8
+                max_ch   = int((pw - rect.x1 - 14) / 4.5)
+                if space_r >= max(50, len(final) * 4.2):
+                    pt = fitz.Point(rect.x1 + 6, rect.y1 - 1)
+                else:
+                    max_ch = int((pw - rect.x0 - 14) / 4.5)
+                    pt = fitz.Point(rect.x0, rect.y1 + 11)
+
+                try:
+                    new_pg.insert_text(
+                        pt, final[: max(10, max_ch)],
+                        fontsize=FS, fontname="helv", color=BFITZ,
+                    )
+                except Exception:
+                    pass
+
+        elif PIL_AVAILABLE and TESSERACT_AVAILABLE:
+            # ── Scanned form: PIL image overlay ─────────────────────────────
+            pix = page.get_pixmap(dpi=DPI)
+            img = PILImage.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            drw = PILImageDraw.Draw(img)
+
+            try:
+                ocr_data = pytesseract.image_to_data(
+                    img, output_type=pytesseract.Output.DICT
+                )
+            except Exception:
+                ocr_data = None
+
+            for field in answered_fields:
+                final = (field.get("final_answer") or "").strip()
+                label = (field.get("label") or "").strip()
+                if not final or not label:
+                    continue
+
+                pos = _find_label_in_ocr(ocr_data, label)
+                if not pos:
+                    continue
+
+                fx, fy, fw, fh = pos
+                ans_x = fx + fw + 6
+                ans_y = fy
+                if ans_x + len(final) * 8 > img.width - 10:
+                    ans_x = fx
+                    ans_y = fy + fh + 4
+
+                try:
+                    drw.text((ans_x, ans_y), final, fill=BLUE, font=_pil_font)
+                except Exception:
+                    pass
+
+            # Convert annotated image back to a single-page PDF
+            img_buf = io.BytesIO()
+            img.save(img_buf, format="PDF", resolution=DPI)
+            img_buf.seek(0)
+            img_pdf = fitz.open(stream=img_buf.read(), filetype="pdf")
+            out.insert_pdf(img_pdf)
+            img_pdf.close()
+            continue  # already appended — skip the out.new_page() path
+
+        else:
+            # No OCR / PIL — just copy the page unchanged
+            new_pg = out.new_page(width=page.rect.width, height=page.rect.height)
+            new_pg.show_pdf_page(new_pg.rect, form_doc, page_num)
+
+    _append_summary_page(out, answered_fields)
+    return out
+
+
+# =============================================================================
 # Session state
 # =============================================================================
 
@@ -1250,12 +1666,24 @@ for _k, _v in [
     ("bundle_fname", "SAR_REDACTED_BUNDLE.pdf"),
     ("proc_summary", []),
     ("play_sound",   None),
+    # ── Form filler ──────────────────────────────────────────────────────────
+    ("tool_mode",         "sar"),        # "sar" | "form_filler"
+    ("ff_stage",          "ff_upload"),  # "ff_upload" | "ff_review" | "ff_export"
+    ("ff_epr_text",       ""),
+    ("ff_epr_docs",       []),           # list of fitz.Document (for context preview)
+    ("ff_form_doc",       None),
+    ("ff_form_text",      ""),
+    ("ff_has_text_layer", False),
+    ("ff_fields",         []),
+    ("ff_filled_bytes",   None),
+    ("ff_patient_name",   ""),
 ]:
     if _k not in st.session_state:
         st.session_state[_k] = _v
 
 
 def _reset():
+    """Reset SAR redaction session state."""
     keys_to_clear = [
         k for k in list(st.session_state.keys())
         if k in ("stage", "analyses", "bundle_bytes", "bundle_fname", "proc_summary")
@@ -1264,6 +1692,21 @@ def _reset():
         or k.startswith("esc_add_")
         or k.startswith("app_all_")
         or k.startswith("rej_all_")
+    ]
+    for k in keys_to_clear:
+        del st.session_state[k]
+
+
+def _reset_ff():
+    """Reset form filler session state."""
+    keys_to_clear = [
+        k for k in list(st.session_state.keys())
+        if k in ("ff_stage", "ff_epr_text", "ff_epr_docs", "ff_form_doc",
+                 "ff_form_text", "ff_has_text_layer", "ff_fields",
+                 "ff_filled_bytes", "ff_patient_name")
+        or k.startswith("ff_ans_")
+        or k.startswith("ff_appr_")
+        or k.startswith("ff_man_")
     ]
     for k in keys_to_clear:
         del st.session_state[k]
@@ -1302,9 +1745,9 @@ with st.sidebar:
         )
     st.markdown(
         '<div style="text-align:center;font-size:1.1rem;font-weight:700;'
-        'color:#fff;margin:6px 0 2px">SAR Redaction Tool</div>'
+        'color:#fff;margin:6px 0 2px">NHS Clinical Tools</div>'
         '<div style="text-align:center;font-size:.72rem;color:rgba(140,180,220,.7);margin-bottom:8px">'
-        'NHS Subject Access Request</div>',
+        'SAR Redaction · Insurance Form Filler</div>',
         unsafe_allow_html=True,
     )
 
@@ -1319,23 +1762,19 @@ with st.sidebar:
 
     st.divider()
 
-    # Stage indicator
-    _stage_labels = {
-        "upload": "① Upload & Analyse",
-        "review": "② Review & Approve",
-        "export": "③ Export",
-    }
-    _stage_colours = {"upload": "#4a9eff", "review": "#f0a030", "export": "#3cb86a"}
-    _sc = _stage_colours.get(st.session_state.stage, "#888")
-    st.markdown(
-        f'<div style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);'
-        f'border-radius:8px;padding:8px 12px;font-size:.82rem;font-weight:600;'
-        f'color:{_sc}">▶ {_stage_labels.get(st.session_state.stage, "")}</div>',
-        unsafe_allow_html=True,
+    # ── Mode selector ─────────────────────────────────────────────────────────
+    _mode_choice = st.radio(
+        "Select tool",
+        ["🔒 SAR Redaction", "📋 Insurance Form Filler"],
+        key="tool_mode_radio",
+        label_visibility="collapsed",
     )
+    tool_mode = "form_filler" if "Form Filler" in _mode_choice else "sar"
+    st.session_state.tool_mode = tool_mode
+
     st.divider()
 
-    # Ollama connection
+    # ── Ollama — shared by both modes ─────────────────────────────────────────
     connected, available_models = check_ollama_connection()
     if connected and available_models:
         st.success(f"Ollama ✓ — {len(available_models)} model(s) available")
@@ -1348,67 +1787,122 @@ with st.sidebar:
         selected_model = st.text_input("Model name", value="llama3")
 
     st.divider()
-    st.subheader("Settings")
-    auto_classify = True   # always on
-    show_debug = st.toggle(
-        "Show LLM debug output",
-        value=False,
-        help="Show the raw LLM response for each document. Useful when no redactions appear.",
-    )
 
-    st.divider()
-    st.subheader("SAR Details")
-    sar_ref       = st.text_input("SAR reference / case ID",  placeholder="e.g. SAR-2024-001")
-    patient_name  = st.text_input("Patient full name",         placeholder="e.g. John Smith")
-    operator_name = st.text_input("Operator name",             placeholder="Your name / initials")
-    sar_date_input = st.date_input("SAR received date", value=None, format="DD/MM/YYYY")
-    if sar_date_input:
-        _deadline  = sar_date_input + datetime.timedelta(days=30)
-        _days_left = (_deadline - datetime.date.today()).days
-        _colour    = "green" if _days_left > 10 else ("orange" if _days_left > 3 else "red")
+    if tool_mode == "sar":
+        # ── SAR-specific stage indicator ──────────────────────────────────────
+        _stage_labels = {
+            "upload": "① Upload & Analyse",
+            "review": "② Review & Approve",
+            "export": "③ Export",
+        }
+        _stage_colours = {"upload": "#4a9eff", "review": "#f0a030", "export": "#3cb86a"}
+        _sc = _stage_colours.get(st.session_state.stage, "#888")
         st.markdown(
-            f"Deadline: **{_deadline.strftime('%d/%m/%Y')}**  \n"
-            f":{_colour}[{_days_left} days remaining]"
+            f'<div style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);'
+            f'border-radius:8px;padding:8px 12px;font-size:.82rem;font-weight:600;'
+            f'color:{_sc}">▶ {_stage_labels.get(st.session_state.stage, "")}</div>',
+            unsafe_allow_html=True,
         )
-
-    st.divider()
-    with st.expander("⚙ Custom redaction (this session only)", expanded=False):
-        st.caption(
-            "These settings apply only until the page is refreshed or the app is restarted. "
-            "They do not affect the default behaviour."
-        )
-        extra_terms = st.text_area(
-            "Extra terms to always redact",
-            placeholder="e.g. Jane Smith\nAcme Care Ltd, Reference XYZ-99",
-            height=90,
-            help="Names, organisations or phrases that should always be redacted in this session. "
-                 "Separate with commas or new lines.",
-        )
-        custom_instructions = st.text_area(
-            "Custom LLM instructions",
-            placeholder=(
-                "e.g. Also flag any medication names.\n"
-                "Treat all street addresses as third-party identifiers."
-            ),
-            height=110,
-            help="Free-text instructions appended to the LLM redaction prompt for every document "
-                 "in this session. Use this to fine-tune what the model flags.",
-        )
-
-    if st.session_state.stage != "upload":
         st.divider()
-        if st.button("🔄 Start New SAR", use_container_width=True):
-            _reset()
-            st.rerun()
 
-    # Disclaimer
+        st.subheader("Settings")
+        auto_classify = True   # always on
+        show_debug = st.toggle(
+            "Show LLM debug output",
+            value=False,
+            help="Show the raw LLM response for each document. Useful when no redactions appear.",
+        )
+
+        st.divider()
+        st.subheader("SAR Details")
+        sar_ref       = st.text_input("SAR reference / case ID",  placeholder="e.g. SAR-2024-001")
+        patient_name  = st.text_input("Patient full name",         placeholder="e.g. John Smith")
+        operator_name = st.text_input("Operator name",             placeholder="Your name / initials")
+        sar_date_input = st.date_input("SAR received date", value=None, format="DD/MM/YYYY")
+        if sar_date_input:
+            _deadline  = sar_date_input + datetime.timedelta(days=30)
+            _days_left = (_deadline - datetime.date.today()).days
+            _colour    = "green" if _days_left > 10 else ("orange" if _days_left > 3 else "red")
+            st.markdown(
+                f"Deadline: **{_deadline.strftime('%d/%m/%Y')}**  \n"
+                f":{_colour}[{_days_left} days remaining]"
+            )
+
+        st.divider()
+        with st.expander("⚙ Custom redaction (this session only)", expanded=False):
+            st.caption(
+                "These settings apply only until the page is refreshed or the app is restarted. "
+                "They do not affect the default behaviour."
+            )
+            extra_terms = st.text_area(
+                "Extra terms to always redact",
+                placeholder="e.g. Jane Smith\nAcme Care Ltd, Reference XYZ-99",
+                height=90,
+                help="Names, organisations or phrases that should always be redacted in this session. "
+                     "Separate with commas or new lines.",
+            )
+            custom_instructions = st.text_area(
+                "Custom LLM instructions",
+                placeholder=(
+                    "e.g. Also flag any medication names.\n"
+                    "Treat all street addresses as third-party identifiers."
+                ),
+                height=110,
+                help="Free-text instructions appended to the LLM redaction prompt for every document "
+                     "in this session. Use this to fine-tune what the model flags.",
+            )
+
+        if st.session_state.stage != "upload":
+            st.divider()
+            if st.button("🔄 Start New SAR", use_container_width=True):
+                _reset()
+                st.rerun()
+
+    else:
+        # ── Form filler sidebar ───────────────────────────────────────────────
+        _ff_stage_labels = {
+            "ff_upload": "① Load Records & Form",
+            "ff_review": "② Review Answers",
+            "ff_export": "③ Download Filled Form",
+        }
+        _ff_colours = {"ff_upload": "#4a9eff", "ff_review": "#f0a030", "ff_export": "#3cb86a"}
+        _fsc = _ff_colours.get(st.session_state.ff_stage, "#888")
+        st.markdown(
+            f'<div style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);'
+            f'border-radius:8px;padding:8px 12px;font-size:.82rem;font-weight:600;'
+            f'color:{_fsc}">▶ {_ff_stage_labels.get(st.session_state.ff_stage, "")}</div>',
+            unsafe_allow_html=True,
+        )
+        st.divider()
+
+        # Patient name used by both modes — set via sidebar
+        patient_name = st.text_input(
+            "Patient full name",
+            placeholder="e.g. John Smith",
+            key="ff_patient_name_input",
+        )
+
+        if st.session_state.ff_stage != "ff_upload":
+            st.divider()
+            if st.button("🔄 Start New Form", use_container_width=True):
+                _reset_ff()
+                st.rerun()
+
+        # Set defaults for SAR-mode variables that won't be defined
+        sar_ref = operator_name = ""
+        auto_classify = True
+        show_debug    = False
+        extra_terms   = ""
+        custom_instructions = ""
+
+    # Disclaimer — always shown
     st.divider()
     st.markdown(
         '<div class="sar-disclaimer">'
         '<b>⚠ Beta Software — No Warranty</b><br>'
         'This tool is in active development and provided for evaluation only. '
-        'All redaction decisions must be independently reviewed by a qualified '
-        'Information Governance professional before any SAR response is released. '
+        'All AI suggestions must be independently reviewed by a qualified clinician '
+        'or Information Governance professional before use. '
         'The authors accept no liability for errors, omissions, or misuse.<br><br>'
         '<b>🔒 Data Privacy</b><br>'
         'All processing uses a local LLM running on this computer. '
@@ -1426,31 +1920,39 @@ with st.sidebar:
 _logo_tag = f'<img src="{_LOGO_B64}" alt="Logo">' if _LOGO_B64 else \
     '<div style="width:54px;height:54px;background:rgba(0,94,184,.5);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:1.6rem">🔒</div>'
 
+if tool_mode == "sar":
+    _header_title = "SAR Redaction Tool"
+    _header_sub   = "NHS Subject Access Request · Multi-format bundle processor · UK GDPR / DPA 2018 / ICO compliant"
+else:
+    _header_title = "Insurance Form Filler"
+    _header_sub   = "Complete insurance & GP report forms automatically from patient records · 100% local AI"
+
 st.markdown(f"""
 <div class="sar-header">
   {_logo_tag}
   <div class="sar-header-text">
-    <h1>SAR Redaction Tool</h1>
-    <p>NHS Subject Access Request · Multi-format bundle processor · UK GDPR / DPA 2018 / ICO compliant</p>
+    <h1>{_header_title}</h1>
+    <p>{_header_sub}</p>
   </div>
   <div style="margin-left:auto;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
     <span class="badge-local">🔒 Fully Local — Zero data egress</span>
-    <span class="badge-test">⚠ Beta — Not for live use without IG review</span>
+    <span class="badge-test">⚠ Beta — Not for live use without review</span>
   </div>
 </div>
 """, unsafe_allow_html=True)
 
-if not DOCX_AVAILABLE:
-    st.warning("python-docx not installed — Word files unsupported. Run: `pip install python-docx`")
-if not TESSERACT_AVAILABLE:
-    st.info("Tesseract not available — TIFF/image files included in bundle but text redaction is not applied to image-only pages.")
+if tool_mode == "sar":
+    if not DOCX_AVAILABLE:
+        st.warning("python-docx not installed — Word files unsupported. Run: `pip install python-docx`")
+    if not TESSERACT_AVAILABLE:
+        st.info("Tesseract not available — TIFF/image files included in bundle but text redaction is not applied to image-only pages.")
 
 
 # =============================================================================
-# STAGE 1 — UPLOAD & ANALYSE
+# SAR REDACTION — stages 1-3
 # =============================================================================
 
-if st.session_state.stage == "upload":
+if tool_mode == "sar" and st.session_state.stage == "upload":
     st.divider()
     st.subheader("① Upload Documents")
     st.caption(
@@ -1685,7 +2187,7 @@ if st.session_state.stage == "upload":
 # STAGE 2 — REVIEW & APPROVE
 # =============================================================================
 
-elif st.session_state.stage == "review":
+elif tool_mode == "sar" and st.session_state.stage == "review":
     st.divider()
 
     _analyses   = st.session_state.analyses
@@ -2038,7 +2540,7 @@ elif st.session_state.stage == "review":
 # STAGE 3 — EXPORT
 # =============================================================================
 
-elif st.session_state.stage == "export":
+elif tool_mode == "sar" and st.session_state.stage == "export":
     st.divider()
     st.success("✅ Redacted bundle is ready for download — review all decisions before releasing to the data subject.")
     st.markdown(
@@ -2087,4 +2589,366 @@ elif st.session_state.stage == "export":
 
     if st.button("🔄 Process Another SAR", use_container_width=True):
         _reset()
+        st.rerun()
+
+
+# =============================================================================
+# INSURANCE FORM FILLER — STAGE 1: UPLOAD & EXTRACT
+# =============================================================================
+
+elif tool_mode == "form_filler" and st.session_state.ff_stage == "ff_upload":
+    st.divider()
+    st.subheader("① Load Patient Records & Upload Insurance Form")
+    st.caption(
+        "Upload the **patient record ZIP** (exported from your EPR system) and the "
+        "**insurance / GP report form** you need to complete. "
+        "The AI will read the records and suggest answers for every field on the form."
+    )
+
+    col_epr, col_form = st.columns(2)
+
+    with col_epr:
+        st.markdown("**Patient Records (EPR export)**")
+        epr_upload = st.file_uploader(
+            "EPR ZIP or individual files",
+            type=["zip", "pdf", "docx", "doc", "txt", "rtf", "tiff", "tif"],
+            accept_multiple_files=True,
+            key="ff_epr_uploader",
+            label_visibility="collapsed",
+        )
+        epr_folder = st.text_input(
+            "Or load from folder path:",
+            placeholder=r"e.g. C:\Patient Records\John Smith",
+            key="ff_epr_folder",
+        ).strip()
+
+    with col_form:
+        st.markdown("**Insurance / GP Report Form**")
+        form_upload = st.file_uploader(
+            "Scanned form (PDF, JPEG, PNG, TIFF)",
+            type=["pdf", "jpg", "jpeg", "png", "tiff", "tif"],
+            accept_multiple_files=False,
+            key="ff_form_uploader",
+            label_visibility="collapsed",
+        )
+        if form_upload:
+            st.caption(f"Form: **{form_upload.name}**")
+            if not TESSERACT_AVAILABLE and form_upload.name.lower().endswith(
+                (".jpg", ".jpeg", ".png", ".tiff", ".tif")
+            ):
+                st.warning("Tesseract OCR not available — text cannot be extracted from image files.")
+
+    _epr_ready  = bool(epr_upload) or bool(epr_folder)
+    _form_ready = bool(form_upload)
+
+    if _epr_ready and _form_ready:
+        if st.button(
+            "Extract Form Fields & Answer from Patient Records",
+            type="primary",
+            use_container_width=True,
+        ):
+            prog   = st.progress(0.0, text="⏳ Ingesting patient records…")
+            status = st.empty()
+
+            # ── Ingest EPR records ────────────────────────────────────────────
+            status.info("📂 Reading patient record files…")
+            all_epr_files = _collect_all_files(epr_upload, epr_folder)
+            epr_text_parts = []
+            epr_docs       = []
+
+            for fi, epr_file in enumerate(all_epr_files):
+                prog.progress(
+                    0.05 + 0.3 * fi / max(len(all_epr_files), 1),
+                    text=f"Reading {epr_file.name}…",
+                )
+                if getattr(epr_file, "_zip_error", None):
+                    continue
+                fdoc, ftext, ferr, _ = ingest_file(epr_file)
+                if ftext.strip():
+                    epr_text_parts.append(ftext)
+                if fdoc:
+                    epr_docs.append(fdoc)
+
+            epr_combined = "\n\n---\n\n".join(epr_text_parts)
+            if not epr_combined.strip():
+                st.error("Could not extract text from the patient record files. "
+                         "Check the files are readable and Tesseract is installed for image-only PDFs.")
+                st.stop()
+
+            # ── Ingest the form ───────────────────────────────────────────────
+            prog.progress(0.38, text="Reading insurance form…")
+            status.info("📋 Reading insurance form…")
+            form_doc, form_text, form_err, has_text_layer = _ingest_form(form_upload)
+
+            if form_err or form_doc is None:
+                st.error(f"Could not open the form: {form_err}")
+                st.stop()
+            if not form_text.strip():
+                st.error(
+                    "No text could be extracted from the form.  \n"
+                    "Ensure Tesseract is installed for scanned images/PDFs."
+                )
+                st.stop()
+
+            # ── LLM: extract form fields ──────────────────────────────────────
+            prog.progress(0.45, text="Identifying form fields…")
+            status.info("🤖 Identifying form fields (this may take a moment)…")
+            fields = extract_form_fields_llm(form_text, selected_model)
+
+            if not fields:
+                st.error(
+                    "The AI could not identify any fields on this form.  \n"
+                    "Try a different model or check the form text was extracted correctly."
+                )
+                st.stop()
+
+            # ── LLM: answer fields from EPR ───────────────────────────────────
+            prog.progress(0.6, text="Answering form fields from patient record…")
+            _pname = patient_name.strip() if patient_name.strip() else st.session_state.get("ff_patient_name", "")
+
+            answered = answer_fields_from_epr(
+                fields,
+                epr_combined,
+                _pname,
+                selected_model,
+                status_cb=lambda msg: status.info(f"🤖 {msg}"),
+            )
+
+            prog.progress(1.0)
+            status.empty()
+
+            st.session_state.ff_epr_text       = epr_combined
+            st.session_state.ff_epr_docs       = epr_docs
+            st.session_state.ff_form_doc       = form_doc
+            st.session_state.ff_form_text      = form_text
+            st.session_state.ff_has_text_layer = has_text_layer
+            st.session_state.ff_fields         = answered
+            st.session_state.ff_patient_name   = _pname
+            st.session_state.ff_stage          = "ff_review"
+            st.session_state.play_sound        = "chime"
+            st.rerun()
+
+    elif not _epr_ready:
+        st.info("Upload the patient record ZIP or files (left column) to begin.")
+    elif not _form_ready:
+        st.info("Upload the insurance form (right column) to begin.")
+
+
+# =============================================================================
+# INSURANCE FORM FILLER — STAGE 2: REVIEW ANSWERS
+# =============================================================================
+
+elif tool_mode == "form_filler" and st.session_state.ff_stage == "ff_review":
+    st.divider()
+
+    _ff_fields   = st.session_state.ff_fields
+    _form_doc    = st.session_state.ff_form_doc
+    _epr_text    = st.session_state.ff_epr_text
+    _epr_docs    = st.session_state.ff_epr_docs
+    _has_tl      = st.session_state.ff_has_text_layer
+    _pname       = st.session_state.ff_patient_name
+
+    _n_auto      = sum(1 for f in _ff_fields if not f.get("needs_manual_input"))
+    _n_manual    = sum(1 for f in _ff_fields if f.get("needs_manual_input"))
+    _n_answered  = sum(1 for f in _ff_fields if f.get("answer"))
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Fields found",         len(_ff_fields))
+    m2.metric("Answered from record", _n_answered)
+    m3.metric("Need your input",      _n_manual)
+    m4.metric("Patient",              _pname or "—")
+
+    st.markdown(
+        "Review each suggested answer below. Edit any answer, then approve it. "
+        "Fields highlighted in **orange** require information that isn't in the patient record — "
+        "please fill these in manually."
+    )
+
+    # ── Form preview ─────────────────────────────────────────────────────────
+    if _form_doc and PIL_AVAILABLE:
+        with st.expander("🖼 View original form", expanded=False):
+            for pg_num, pg in enumerate(_form_doc):
+                pix = pg.get_pixmap(dpi=110)
+                img = PILImage.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+                st.image(buf.getvalue(), caption=f"Form page {pg_num + 1}", use_container_width=True)
+
+    st.divider()
+
+    # ── Fields answered from patient record ───────────────────────────────────
+    _auto_fields = [f for f in _ff_fields if not f.get("needs_manual_input")]
+    if _auto_fields:
+        st.markdown("### Answers from Patient Record")
+        st.caption(
+            "These answers were suggested by the AI from the patient record. "
+            "Edit if needed, then tick **Approved** to include in the output."
+        )
+
+    for fi, field in enumerate(_ff_fields):
+        if field.get("needs_manual_input"):
+            continue
+
+        label      = field.get("label", f"Field {fi + 1}")
+        conf       = field.get("confidence", "none")
+        evidence   = field.get("evidence", "")
+        key_ans    = f"ff_ans_{fi}"
+        key_appr   = f"ff_appr_{fi}"
+
+        _conf_col = {
+            "high":   "rgba(28,155,60,.18)",
+            "medium": "rgba(0,94,184,.14)",
+            "low":    "rgba(255,140,0,.14)",
+            "none":   "rgba(180,0,0,.10)",
+        }.get(conf, "rgba(255,255,255,.04)")
+
+        with st.container(border=True):
+            c_label, c_conf = st.columns([4, 1])
+            with c_label:
+                st.markdown(f"**{label}**")
+            with c_conf:
+                _cmap = {"high": "🟢 High", "medium": "🔵 Medium", "low": "🟡 Low", "none": "🔴 None"}
+                st.caption(_cmap.get(conf, conf))
+
+            # Editable answer
+            current_ans = st.session_state.get(key_ans, field.get("final_answer", ""))
+            new_ans = st.text_input(
+                "Answer",
+                value=current_ans,
+                key=key_ans,
+                label_visibility="collapsed",
+                placeholder="Type answer here…",
+            )
+            field["final_answer"] = new_ans
+
+            # Approval checkbox
+            default_approved = bool(field.get("answer")) and conf in ("high", "medium")
+            field["approved"] = st.checkbox(
+                "Approved — include this answer in the output",
+                value=st.session_state.get(key_appr, default_approved),
+                key=key_appr,
+            )
+
+            # Evidence panel
+            if evidence:
+                with st.expander("📄 Evidence from patient record"):
+                    st.markdown(f"> {evidence}")
+                    # Try to find and highlight the text in the EPR document
+                    if _epr_docs and PIL_AVAILABLE:
+                        for epr_doc in _epr_docs[:3]:   # check up to 3 docs
+                            _png, _pnum, _found = _render_context_preview(epr_doc, evidence[:60])
+                            if _found:
+                                st.caption(f"Page {_pnum} of patient record — highlighted in yellow")
+                                st.image(_png, use_container_width=True)
+                                break
+
+    # ── Manual input fields ───────────────────────────────────────────────────
+    _manual_fields = [f for f in _ff_fields if f.get("needs_manual_input")]
+    if _manual_fields:
+        st.divider()
+        st.markdown("### Additional Information Required from You")
+        st.caption(
+            "The following fields could not be answered from the patient record. "
+            "Please provide the information manually."
+        )
+
+        for fi, field in enumerate(_ff_fields):
+            if not field.get("needs_manual_input"):
+                continue
+
+            label = field.get("label", f"Field {fi + 1}")
+            hint  = field.get("manual_hint", "")
+            key_m = f"ff_man_{fi}"
+
+            with st.container(border=True):
+                st.markdown(f"**{label}**")
+                if hint:
+                    st.caption(hint)
+                man_val = st.text_input(
+                    "Your answer",
+                    value=st.session_state.get(key_m, ""),
+                    key=key_m,
+                    label_visibility="collapsed",
+                    placeholder="Enter answer…",
+                )
+                field["final_answer"] = man_val
+                field["approved"]     = bool(man_val.strip())
+                field["confidence"]   = "none"
+                field["evidence"]     = ""
+
+    # ── Build output button ───────────────────────────────────────────────────
+    st.divider()
+    _n_approved = sum(1 for f in _ff_fields if f.get("approved") and f.get("final_answer", "").strip())
+    st.markdown(f"**{_n_approved} of {len(_ff_fields)} fields** will be included in the output.")
+
+    if st.button("Build Filled Form PDF", type="primary", use_container_width=True):
+        with st.spinner("Building PDF…"):
+            filled_doc = build_filled_form_pdf(
+                _form_doc, _ff_fields, has_text_layer=_has_tl
+            )
+            buf = io.BytesIO()
+            filled_doc.save(buf)
+            buf.seek(0)
+            st.session_state.ff_filled_bytes = buf.getvalue()
+            st.session_state.ff_stage        = "ff_export"
+            st.session_state.play_sound      = "fanfare"
+            st.rerun()
+
+
+# =============================================================================
+# INSURANCE FORM FILLER — STAGE 3: EXPORT
+# =============================================================================
+
+elif tool_mode == "form_filler" and st.session_state.ff_stage == "ff_export":
+    st.divider()
+    st.success("✅ Filled form PDF is ready — review all answers before sending to the insurer.")
+
+    st.markdown(
+        '<div class="sar-disclaimer">'
+        '<b>⚠ Important — Human review required</b><br>'
+        'All answers were suggested by an AI and must be verified by the responsible clinician '
+        'or practice manager before the form is submitted. The authors accept no liability for '
+        'incorrect or incomplete answers.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    _ff_fields = st.session_state.ff_fields
+    _n_filled  = sum(1 for f in _ff_fields if f.get("final_answer", "").strip())
+    _n_manual  = sum(1 for f in _ff_fields if f.get("needs_manual_input") and f.get("final_answer", "").strip())
+    _n_epr     = _n_filled - _n_manual
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total fields",         len(_ff_fields))
+    c2.metric("Answered from record", _n_epr)
+    c3.metric("Manually provided",    _n_manual)
+
+    # Summary table
+    if PANDAS_AVAILABLE:
+        summary_rows = []
+        for f in _ff_fields:
+            source = "Manual" if f.get("needs_manual_input") else f"AI ({f.get('confidence','?')} confidence)"
+            summary_rows.append({
+                "Field":   f.get("label", ""),
+                "Answer":  f.get("final_answer", "") or "—",
+                "Source":  source,
+                "Status":  "✅" if f.get("final_answer", "").strip() else "⚠ Empty",
+            })
+        st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+
+    today    = datetime.date.today().strftime("%Y%m%d")
+    pname    = st.session_state.get("ff_patient_name", "Patient") or "Patient"
+    safe_p   = re.sub(r"[^\w\-]", "_", pname)
+
+    st.download_button(
+        label="⬇  Download Filled Form PDF",
+        data=st.session_state.ff_filled_bytes,
+        file_name=f"{today}_{safe_p}_COMPLETED_FORM.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+        type="primary",
+    )
+
+    if st.button("🔄 Complete Another Form", use_container_width=True):
+        _reset_ff()
         st.rerun()
