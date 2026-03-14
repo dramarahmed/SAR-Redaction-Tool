@@ -72,8 +72,19 @@ if errorlevel 1 (
     )
     if not defined REPAIR_PYTHON (
         echo.
-        echo  ERROR: No accessible Python found.
-        echo  Please re-run INSTALL.bat (right-click ^> Run as administrator^).
+        echo  =====================================================
+        echo   ACTION REQUIRED: Python not installed for all users
+        echo  =====================================================
+        echo.
+        echo  Step 1: Find INSTALL.bat in the app folder:
+        echo    %~dp0
+        echo.
+        echo  Step 2: Right-click INSTALL.bat
+        echo          Select "Run as administrator"
+        echo.
+        echo  Step 3: When setup finishes, use the desktop
+        echo          shortcut to launch the app.
+        echo.
         pause
         exit /b 1
     )
