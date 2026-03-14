@@ -761,6 +761,9 @@ Apply UK GDPR / DPA 2018 / ICO guidance and the BMA guidance on access to health
   data (not their professional act) is being recorded.
 • NHS Trust, hospital, GP practice, clinic or department names.
 • Standard appointment dates, referral acknowledgements, administrative notices.
+• In a paediatric record (patient described as "child"), the named parent or guardian
+  listed in the record header (e.g. "Parent/Guardian: Mrs Chloe Green") is the SAR
+  requestor acting on the child's behalf — do NOT redact their name.
 
 ━━━ PROPOSE FOR AUTO-REDACTION ━━━
 Copy the EXACT tag name. Redact the minimum span — a name or phrase, not a whole sentence.
@@ -774,8 +777,23 @@ THIRD_PARTY_IDENTIFIER   — name or identifying detail of any private individua
                            "Next of kin:") — redact ALL fields in such blocks, not just
                            the name. Create a separate entry for EACH field (name, DOB,
                            phone, address) so each is individually redacted.
+                           Device serial numbers for the patient's personal medical devices
+                           (insulin pumps, implants, CGM sensors, home monitors) are personal
+                           data — flag as THIRD_PARTY_IDENTIFIER.
+                           When you flag a PERSONAL email address (firstname.lastname@ or
+                           similar format) belonging to a named private individual, ALSO
+                           create a separate THIRD_PARTY_IDENTIFIER entry for that person's
+                           name (e.g. if you flag "anita.lobo@company.co.uk", also flag
+                           "Anita Lobo"). Do NOT apply this rule to generic role/dept
+                           addresses (support@, info@, admin@, victim.support@) — and
+                           NEVER use it to flag clinicians in their professional capacity.
 CONFIDENTIAL_DISCLOSURE  — information given in confidence or anonymously by a third party
                            (ICO guidance: the identity of the third party may be withheld).
+                           Specific descriptions of a named or identifiable third party's
+                           threatening or abusive behaviour (e.g. "sending threatening
+                           messages", "verbal abuse", "threatening text messages") are
+                           CONFIDENTIAL_DISCLOSURE — they characterise that private individual
+                           and should not be disclosed without review.
 OTHER_PATIENT_DATA       — data clearly belonging to a different patient: misfiled notes,
                            wrong-patient test results, clinic lists showing other patients.
                            Redact ALL identifying fields for the other patient including their
@@ -858,8 +876,13 @@ DPA_SCHEDULE3_EXEMPTION     — content that may engage a Sch.3 DPA 2018 exempti
   Always capture just the child's name as the minimum span (e.g. text: "Lily"), and
   their approximate DOB as a second separate entry (e.g. text: "2019" or "approximately
   2019") — never bundle the name and description into one long text string.
-• Escalation and auto-redaction are MUTUALLY EXCLUSIVE. If a passage is listed in
-  "escalations" it MUST NOT also appear in "proposed_redactions". Never double-list.
+• Escalation and auto-redaction are MUTUALLY EXCLUSIVE for the SAME span of text.
+  However, a SHORTER span within an escalated passage CAN still be proposed for
+  auto-redaction — e.g. if you escalate the full sentence "He mentioned his
+  brother-in-law David Holmes has continued to send threatening messages" under
+  DOMESTIC_ABUSE_CONTEXT, you should ALSO add a CONFIDENTIAL_DISCLOSURE entry for
+  the specific phrase "threatening messages" (or similar behavioural description)
+  so it is redacted automatically regardless of the human decision on the escalation.
 
 Output this JSON and nothing else:
 {{
@@ -908,7 +931,7 @@ def _analyse_chunk(chunk: str, model: str, patient_line: str, extra_instructions
                 {"role": "user",   "content": user_msg},
             ],
             format="json",                              # forces valid JSON output for any model
-            options={"temperature": 0.05,
+            options={"temperature": 0,
                      "num_predict": 1024},              # cap output — SAR JSON rarely exceeds ~800 tokens
         )
 
@@ -1017,11 +1040,121 @@ def llm_analyse_document(
         and (p.get("text") or "").strip().lower() not in _esc_texts  # also in escalations
     ]
 
+    # ── Post-processing: fix empty replacements ──────────────────────────────
+    # The LLM sometimes returns auto-redact items (CONFIDENTIAL_DISCLOSURE etc.)
+    # with an empty replacement string. Fill in the canonical default so they
+    # are actually redacted in the output.
+    _DEFAULT_REPLACEMENTS = {
+        "THIRD_PARTY_IDENTIFIER":  "[REDACTED - third-party personal data]",
+        "CONFIDENTIAL_DISCLOSURE": "[REDACTED - confidential third-party information]",
+        "OTHER_PATIENT_DATA":      "[REDACTED - other patient's data]",
+        "AGENCY_CONFIDENTIAL_INFO":"[REDACTED - agency confidential information]",
+        "INDIRECT_IDENTIFIER":     "[REDACTED - indirect identifier]",
+    }
+    for item in all_proposed:
+        if not (item.get("replacement") or "").strip():
+            tag = item.get("tag", "")
+            item["replacement"] = _DEFAULT_REPLACEMENTS.get(tag, "[REDACTED]")
+
+    # ── Post-processing: extract concrete identifiers from escalated passages ──
+    # When the LLM escalates a whole passage, concrete data items embedded within it
+    # (email addresses, police/case reference numbers, phone numbers) should still be
+    # auto-redacted so they are not disclosed even if the reviewer decides to release
+    # the rest of the escalation context.
+    # Also extract abbreviated names of agency workers (e.g. "P. Hall") from passages.
+    _existing_proposed_lower = {(p.get("text") or "").strip().lower() for p in all_proposed}
+    _EMAIL_RE   = re.compile(r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b')
+    _PHONE_RE   = re.compile(r'\b(\d{5}\s\d{6}|\d{4}\s\d{3}\s\d{4}|\d{11}|\+44[\s\d]{10,13})\b')
+    _REF_RE     = re.compile(r'\b[A-Z]{2,}[/\-]\d{4}[/\-][A-Z0-9]+[/\-]\d+\b')   # e.g. PC/2024/BR/004421
+    # Abbreviated names: "P. Hall", "Dr Wood", "Mr Smith" etc.
+    _ABBR_NAME_RE = re.compile(r'\b([A-Z]\.?\s+[A-Z][a-z]{2,})\b')
+    for esc in all_escalations:
+        esc_text = (esc.get("text") or "").strip()
+        for pat, tag, repl in (
+            (_EMAIL_RE,     "THIRD_PARTY_IDENTIFIER", "[REDACTED - third-party personal data]"),
+            (_PHONE_RE,     "THIRD_PARTY_IDENTIFIER", "[REDACTED - third-party personal data]"),
+            (_REF_RE,       "THIRD_PARTY_IDENTIFIER", "[REDACTED - third-party personal data]"),
+            (_ABBR_NAME_RE, "AGENCY_CONFIDENTIAL_INFO", "[REDACTED - agency confidential information]"),
+        ):
+            for m in pat.finditer(esc_text):
+                candidate = m.group(0).strip() if pat is not _ABBR_NAME_RE else m.group(1).strip()
+                # For abbreviated names, skip clinician titles (Dr, Prof etc.) — they're staff
+                # and skip names matching the patient's own name tokens
+                if tag == "AGENCY_CONFIDENTIAL_INFO":
+                    # "Dr Wood" — skip if this is the treating clinician already in the record
+                    # header. Simple check: if the name appears in the document header (first 500
+                    # chars) preceded by "Clinician:" or similar, skip it.
+                    _header = text[:600].lower()
+                    if candidate.split()[-1].lower() in _header:
+                        # surname appears in header — likely the treating GP, skip
+                        continue
+                if candidate.lower() not in _existing_proposed_lower:
+                    all_proposed.append({
+                        "text":        candidate,
+                        "tag":         tag,
+                        "reason":      "Identifier/name extracted from escalated passage (auto-redact regardless of escalation decision)",
+                        "replacement": repl,
+                        "context":     esc_text[:80],
+                        "approved":    True,
+                    })
+                    _existing_proposed_lower.add(candidate.lower())
+
+    # ── Post-processing: family-member name extraction ────────────────────────
+    # Catch children/relatives mentioned as "daughter Emily", "son James" etc.
+    # The LLM sometimes escalates the surrounding context without separately
+    # flagging the family member's first name as THIRD_PARTY_IDENTIFIER.
+    _FAMILY_PATTERN = re.compile(
+        r'\b(?:daughter|son|sister|brother|mother|father|wife|husband|partner|'
+        r'fianc[eé]e?|sibling|niece|nephew|granddaughter|grandson)\s+'
+        r'(?:named\s+)?([A-Z][a-z]{1,})\b'
+    )
+    for fm in _FAMILY_PATTERN.finditer(text):
+        name = fm.group(1)
+        # Skip if it's a patient name token
+        _pn_toks = {t.lower() for t in patient_name.split() if len(t) >= 3}
+        if name.lower() in _pn_toks:
+            continue
+        if name.lower() not in _existing_proposed_lower:
+            all_proposed.append({
+                "text":        name,
+                "tag":         "THIRD_PARTY_IDENTIFIER",
+                "reason":      f"Family member's first name (deterministic extraction)",
+                "replacement": "[REDACTED - third-party personal data]",
+                "context":     text[max(0, fm.start()-20):fm.end()+20],
+                "approved":    True,
+            })
+            _existing_proposed_lower.add(name.lower())
+
+    # ── Post-processing: remove clinician-only names from proposed_redactions ──
+    # The LLM sometimes flags a clinician name (e.g. "Elena Morris") as a
+    # THIRD_PARTY_IDENTIFIER when she appears in professional correspondence.
+    # If a proposed name appears in the document ONLY in contexts immediately
+    # preceded by "Dr" or "Prof", it is a clinician in professional capacity
+    # and must not be auto-redacted.
+    _CLINICIAN_TITLE_RE = re.compile(r'\b(?:Dr|Prof(?:essor)?)\s+', re.IGNORECASE)
+    filtered_proposed = []
+    for item in all_proposed:
+        if item.get("tag") == "THIRD_PARTY_IDENTIFIER":
+            name = (item.get("text") or "").strip()
+            # Only check multi-word names (single-word expansions are OK)
+            if " " in name:
+                occurrences = list(re.finditer(
+                    r'(?<!\w)' + re.escape(name) + r'(?!\w)', text, re.IGNORECASE
+                ))
+                if occurrences and all(
+                    _CLINICIAN_TITLE_RE.search(text[max(0, m.start() - 8): m.start()])
+                    for m in occurrences
+                ):
+                    # Every occurrence is preceded by Dr/Prof — clinician in professional capacity
+                    continue
+        filtered_proposed.append(item)
+    all_proposed = filtered_proposed
+
     # Expand multi-word name redactions to catch first-name-only mentions.
     # Pass patient_name so the expander never creates a redaction target that
     # matches the patient's own name parts (e.g. a shared family surname).
     all_proposed = _expand_name_redactions(all_proposed, text, patient_name)
-    all_proposed = _expand_agency_contacts(all_proposed, text)
+    all_proposed = _expand_agency_contacts(all_proposed, text, patient_name)
 
     return {
         "proposed_redactions": all_proposed,
@@ -1315,12 +1448,76 @@ def _expand_name_redactions(proposed: list, text: str, patient_name: str = "") -
     extra = []
 
     for item in proposed:
-        if item.get("tag") != "THIRD_PARTY_IDENTIFIER":
-            continue
+        tag = item.get("tag", "")
         raw = (item.get("text") or "").strip()
+
+        # For AGENCY_CONFIDENTIAL_INFO items like
+        # "Claire Hughes (Warwickshire Children's Services, Tel: 01926 000055)"
+        # extract the name portion before the first '(' or ',' and add it
+        # as a standalone redaction if it appears elsewhere in the document.
+        if tag == "AGENCY_CONFIDENTIAL_INFO":
+            # Extract leading name-like segment (before first bracket or comma)
+            name_part = re.split(r'[,(]', raw)[0].strip()
+            # Must look like a 2-word proper name (Firstname Lastname)
+            np_parts = name_part.split()
+            if (2 <= len(np_parts) <= 3
+                    and all(p[0].isupper() for p in np_parts if p)
+                    and name_part.lower() not in existing_lower):
+                # Check it appears standalone outside the full string context
+                pattern = r'(?<!\w)' + re.escape(name_part) + r'(?!\w)'
+                for m in re.finditer(pattern, text, re.IGNORECASE):
+                    window_start = max(0, m.start() - len(raw) - 5)
+                    window_end   = min(len(text), m.end() + len(raw) + 5)
+                    window       = text[window_start:window_end]
+                    if raw.lower() not in window.lower():
+                        extra.append({
+                            "text":        name_part,
+                            "tag":         tag,
+                            "reason":      f"Standalone name from agency contact (propagated from \"{raw}\")",
+                            "replacement": item.get("replacement", "[REDACTED - agency confidential information]"),
+                            "context":     item.get("context", ""),
+                            "approved":    True,
+                        })
+                        existing_lower.add(name_part.lower())
+                        # Also expand individual surname for further-downstream standalone refs
+                        if len(np_parts) == 2:
+                            surname = np_parts[1]
+                            if (surname.lower() not in existing_lower
+                                    and surname.lower() not in _STOPWORDS
+                                    and len(surname) >= 3):
+                                pat2 = r'(?<!\w)' + re.escape(surname) + r'(?!\w)'
+                                for m2 in re.finditer(pat2, text, re.IGNORECASE):
+                                    w2_start = max(0, m2.start() - len(raw) - 5)
+                                    w2_end   = min(len(text), m2.end() + len(raw) + 5)
+                                    w2       = text[w2_start:w2_end]
+                                    if raw.lower() not in w2.lower() and name_part.lower() not in w2.lower():
+                                        extra.append({
+                                            "text":        surname,
+                                            "tag":         tag,
+                                            "reason":      f"Surname of agency contact (propagated from \"{raw}\")",
+                                            "replacement": item.get("replacement", "[REDACTED - agency confidential information]"),
+                                            "context":     item.get("context", ""),
+                                            "approved":    True,
+                                        })
+                                        existing_lower.add(surname.lower())
+                                        break
+                        break
+            continue  # do not fall through to the THIRD_PARTY_IDENTIFIER word-split logic
+
+        if tag != "THIRD_PARTY_IDENTIFIER":
+            continue
         parts = raw.split()
         if len(parts) < 2:
             continue   # already a single word — nothing to expand
+
+        # Do NOT expand address strings — they contain place names (city, town) that
+        # occur legitimately in institution names like "Bradford Royal Infirmary".
+        _ADDRESS_KEYWORDS = {
+            "road", "street", "avenue", "lane", "close", "drive", "court", "place",
+            "way", "grove", "gardens", "crescent", "terrace", "walk", "parade",
+        }
+        if any(kw in raw.lower() for kw in _ADDRESS_KEYWORDS):
+            continue
 
         # Only expand strings that look like proper names: every significant word
         # must start with an uppercase letter and not be a stopword.
@@ -1376,7 +1573,7 @@ def _expand_name_redactions(proposed: list, text: str, patient_name: str = "") -
 # Post-processing: expand agency contacts to catch paired name/phone
 # =============================================================================
 
-def _expand_agency_contacts(proposed: list, text: str) -> list:
+def _expand_agency_contacts(proposed: list, text: str, patient_name: str = "") -> list:
     """
     When an AGENCY_CONFIDENTIAL_INFO or THIRD_PARTY_IDENTIFIER proposed redaction
     contains a phone number but the adjacent name was missed (or vice versa), try to
@@ -1392,10 +1589,48 @@ def _expand_agency_contacts(proposed: list, text: str) -> list:
     _PHONE_PAT = _re.compile(
         r'\b(\d{5}\s\d{6}|\d{4}\s\d{3}\s\d{4}|\d{11}|\+44[\s\d]{10,13})\b'
     )
+    _EMAIL_PAT = _re.compile(
+        r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b'
+    )
+    # Proper name: 2 words, each Title-case, each ≥ 2 chars.
+    # Deliberately excludes 3+ word strings to avoid institutional names.
     _NAME_PAT = _re.compile(
-        r'\b([A-Z][a-z]{1,}(?:\s+[A-Z][a-z]{1,})+)\b'
+        r'\b([A-Z][a-z]{1,}(?:\s+[A-Z][a-z]{1,}){1,2})\b'
     )
     _AGENCY_TAGS = {"AGENCY_CONFIDENTIAL_INFO", "THIRD_PARTY_IDENTIFIER"}
+
+    # Words that indicate an organisation or role, not a person's name.
+    # Candidates containing any of these are skipped.
+    _INSTITUTIONAL_WORDS = {
+        "hospital", "infirmary", "royal", "nhs", "trust", "refuge", "liaison",
+        "services", "clinic", "surgery", "centre", "center", "council",
+        "authority", "department", "office", "association", "police", "court",
+        "school", "college", "university", "academy", "foundation", "unit",
+        "ward", "team", "group", "limited", "ltd", "plc", "inc", "officer",
+    }
+
+    def _is_institutional(name: str) -> bool:
+        """Return True if the candidate looks like an organisation name."""
+        words = name.lower().split()
+        return any(w in _INSTITUTIONAL_WORDS for w in words)
+
+    def _is_plausible_person(name: str) -> bool:
+        """
+        Return True if the candidate looks like a real person's name:
+        - 2 or 3 words (3-word names like 'P. Hall' qualify if short initial)
+        - Not institutional
+        """
+        words = name.split()
+        if not (1 < len(words) <= 3):
+            return False
+        return not _is_institutional(name)
+
+    # Build patient name token set so we never add the patient as a redaction target
+    _pn_tokens_agency: set = set()
+    for tok in patient_name.strip().lower().split():
+        clean = tok.strip(".,;:()[]'\"")
+        if len(clean) >= 3:
+            _pn_tokens_agency.add(clean)
 
     existing_lower = {(r.get("text") or "").strip().lower() for r in proposed}
     lines = text.splitlines()
@@ -1406,17 +1641,16 @@ def _expand_agency_contacts(proposed: list, text: str) -> list:
             continue
         item_text = (item.get("text") or "").strip()
 
-        # Case A: item is a phone number → look for adjacent name
+        # Case A: item is a phone number → look for adjacent personal name (±1 line)
         if _PHONE_PAT.fullmatch(item_text.replace(" ", "")):
-            # Find the line containing this phone number
             for li, line in enumerate(lines):
                 if item_text in line:
-                    # Search ±3 lines for a name pattern
-                    window = lines[max(0, li - 3): li + 4]
+                    window = lines[max(0, li - 1): li + 2]
                     for wline in window:
                         for m in _NAME_PAT.finditer(wline):
                             candidate = m.group(1)
-                            if candidate.lower() not in existing_lower:
+                            if (candidate.lower() not in existing_lower
+                                    and _is_plausible_person(candidate)):
                                 extra.append({
                                     "text":        candidate,
                                     "tag":         item.get("tag"),
@@ -1428,11 +1662,11 @@ def _expand_agency_contacts(proposed: list, text: str) -> list:
                                 existing_lower.add(candidate.lower())
                     break
 
-        # Case B: item is a name → look for adjacent phone numbers
-        elif _NAME_PAT.fullmatch(item_text):
+        # Case B: item is a name → look for adjacent phone numbers (±1 line)
+        elif _NAME_PAT.fullmatch(item_text) and _is_plausible_person(item_text):
             for li, line in enumerate(lines):
                 if item_text in line:
-                    window = lines[max(0, li - 3): li + 4]
+                    window = lines[max(0, li - 1): li + 2]
                     for wline in window:
                         for m in _PHONE_PAT.finditer(wline):
                             candidate = m.group(0)
@@ -1442,6 +1676,32 @@ def _expand_agency_contacts(proposed: list, text: str) -> list:
                                     "tag":         item.get("tag"),
                                     "reason":      f"Phone associated with agency contact (paired with {item_text})",
                                     "replacement": "[REDACTED - agency contact]",
+                                    "context":     wline.strip(),
+                                    "approved":    True,
+                                })
+                                existing_lower.add(candidate.lower())
+                    break
+
+        # Case C: item is an email address → look for the owner's name on the same line
+        elif _EMAIL_PAT.fullmatch(item_text):
+            for li, line in enumerate(lines):
+                if item_text in line:
+                    # Search the same line and ±1 lines for a proper name
+                    window = lines[max(0, li - 1): li + 2]
+                    for wline in window:
+                        for m in _NAME_PAT.finditer(wline):
+                            candidate = m.group(1)
+                            # Skip if any part of the candidate matches a patient name token
+                            candidate_toks = {w.lower() for w in candidate.split()}
+                            if candidate_toks & _pn_tokens_agency:
+                                continue
+                            if (candidate.lower() not in existing_lower
+                                    and _is_plausible_person(candidate)):
+                                extra.append({
+                                    "text":        candidate,
+                                    "tag":         "THIRD_PARTY_IDENTIFIER",
+                                    "reason":      f"Named owner of email address {item_text}",
+                                    "replacement": "[REDACTED - third-party personal data]",
                                     "context":     wline.strip(),
                                     "approved":    True,
                                 })

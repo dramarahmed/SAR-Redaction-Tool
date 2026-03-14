@@ -5,6 +5,7 @@ Standalone automated test harness that processes all 5 test ZIPs through
 the SAR redaction engine and produces a detailed JSON report.
 """
 
+import argparse
 import json
 import os
 import sys
@@ -173,10 +174,12 @@ def _process_document(text: str, model: str, patient_name: str, filename: str) -
         }
 
 
-def _find_test_zips() -> list:
-    """Find all Test-*-v2.zip files."""
+def _find_test_zips(zip_pattern: str = None) -> list:
+    """Find test ZIP files matching the given pattern (default: Test-*-v2.zip)."""
     import glob
-    pattern = os.path.join(ZIP_DIR, "Test-*-v2.zip")
+    if zip_pattern is None:
+        zip_pattern = ZIP_PATTERN
+    pattern = os.path.join(ZIP_DIR, zip_pattern)
     zips = sorted(glob.glob(pattern))
     return zips
 
@@ -299,6 +302,11 @@ def _process_zip(zip_path: str, model: str) -> dict:
 
 
 def main():
+    parser = argparse.ArgumentParser(description="SAR Redaction Test Harness")
+    parser.add_argument("--pattern", default=None,
+                        help="Glob pattern for test ZIPs (default: Test-*-v2.zip)")
+    args = parser.parse_args()
+
     print("=" * 60, flush=True)
     print("SAR Redaction Test Harness", flush=True)
     print("=" * 60, flush=True)
@@ -307,9 +315,11 @@ def main():
     model = _select_model()
 
     # Find test ZIPs
-    zips = _find_test_zips()
+    zip_pattern = args.pattern
+    zips = _find_test_zips(zip_pattern)
     if not zips:
-        print(f"ERROR: No Test-*-v2.zip files found in {ZIP_DIR}", flush=True)
+        used_pattern = zip_pattern or ZIP_PATTERN
+        print(f"ERROR: No {used_pattern} files found in {ZIP_DIR}", flush=True)
         sys.exit(1)
 
     print(f"\nFound {len(zips)} test ZIP(s):", flush=True)
