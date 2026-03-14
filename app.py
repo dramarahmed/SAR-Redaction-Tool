@@ -384,57 +384,54 @@ p, li { color: rgba(195,218,255,.85) !important; }
     border-top: 1px solid rgba(255,255,255,.06) !important;
 }
 
-/* ═══ Inputs — global ═══ */
+/* ═══ Inputs — global (main content + sidebar) ═══ */
+/* Target every input/textarea variant Streamlit can render */
+input,
+textarea,
+[data-baseweb="input"] input,
+[data-baseweb="base-input"] input,
+[data-baseweb="textarea"] textarea,
 .stTextInput > div > div > input,
-.stDateInput > div > div > input {
-    background: rgba(255,255,255,.07) !important;
-    border: 1px solid rgba(255,255,255,.13) !important;
-    border-radius: 8px !important;
-    color: rgba(210,232,255,.95) !important;
+.stTextArea > div > div > textarea,
+.stDateInput > div > div > input,
+.stNumberInput > div > div > input {
+    background:                rgba(6,18,48,0.88) !important;
+    background-color:          rgba(6,18,48,0.88) !important;
+    border:                    1px solid rgba(0,94,184,.35) !important;
+    border-radius:             8px !important;
+    color:                     rgba(210,232,255,.95) !important;
+    -webkit-text-fill-color:   rgba(210,232,255,.95) !important;
 }
-.stTextInput > div > div > input:focus { border-color: rgba(0,94,184,.6) !important; box-shadow: 0 0 0 2px rgba(0,94,184,.18) !important; }
-.stSelectbox [data-baseweb="select"] { background: rgba(255,255,255,.06) !important; }
-
-/* ═══ Inputs — sidebar: solid dark bg so light text is readable ═══ */
-/* Catch every input/container variant Streamlit might render */
-[data-testid="stSidebar"] input,
-[data-testid="stSidebar"] [data-baseweb="input"],
-[data-testid="stSidebar"] [data-baseweb="input"] input,
-[data-testid="stSidebar"] [data-baseweb="base-input"],
-[data-testid="stSidebar"] [data-baseweb="base-input"] input,
-[data-testid="stSidebar"] .stTextInput > div > div > input,
-[data-testid="stSidebar"] .stDateInput > div > div > input,
-[data-testid="stSidebar"] .stDateInput input {
-    background: rgba(6, 18, 48, 0.92) !important;
-    background-color: rgba(6, 18, 48, 0.92) !important;
-    border: 1px solid rgba(0,94,184,.38) !important;
-    border-radius: 8px !important;
-    color: rgba(210,232,255,.95) !important;
-    -webkit-text-fill-color: rgba(210,232,255,.95) !important;
-}
-[data-testid="stSidebar"] input::placeholder,
-[data-testid="stSidebar"] [data-baseweb="input"] input::placeholder {
-    color: rgba(140,175,220,.45) !important;
+input::placeholder,
+textarea::placeholder {
+    color:                   rgba(140,175,220,.45) !important;
     -webkit-text-fill-color: rgba(140,175,220,.45) !important;
 }
-[data-testid="stSidebar"] input:focus,
-[data-testid="stSidebar"] [data-baseweb="input"]:focus-within {
-    border-color: rgba(0,130,240,.65) !important;
-    box-shadow: 0 0 0 2px rgba(0,94,184,.22) !important;
+input:focus,
+textarea:focus,
+[data-baseweb="input"]:focus-within,
+[data-baseweb="textarea"]:focus-within {
+    border-color: rgba(0,94,184,.7) !important;
+    box-shadow:   0 0 0 2px rgba(0,94,184,.22) !important;
 }
-/* Selectbox containers */
-[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"],
-[data-testid="stSidebar"] .stSelectbox > div > div {
-    background: rgba(6, 18, 48, 0.92) !important;
-    border: 1px solid rgba(0,94,184,.38) !important;
-    border-radius: 8px !important;
-    color: rgba(210,232,255,.95) !important;
+.stSelectbox [data-baseweb="select"],
+.stSelectbox > div > div,
+[data-baseweb="select"] {
+    background: rgba(6,18,48,0.88) !important;
+    border:     1px solid rgba(0,94,184,.35) !important;
+    color:      rgba(210,232,255,.95) !important;
 }
-/* Selectbox dropdown option text */
-[data-testid="stSidebar"] [data-baseweb="select"] [data-baseweb="option"] {
-    background: rgba(6, 18, 48, 0.95) !important;
-    color: rgba(210,232,255,.9) !important;
+[data-baseweb="select"] [data-baseweb="option"] {
+    background: rgba(6,18,48,0.95) !important;
+    color:      rgba(210,232,255,.9) !important;
 }
+/* Selected value text inside selectbox */
+[data-baseweb="select"] [data-baseweb="single-value"],
+[data-baseweb="select"] div {
+    color:                   rgba(210,232,255,.95) !important;
+    -webkit-text-fill-color: rgba(210,232,255,.95) !important;
+}
+
 
 /* ═══ Alert boxes ═══ */
 [data-testid="stAlert"] {
