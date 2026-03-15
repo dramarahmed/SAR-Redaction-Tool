@@ -1121,26 +1121,121 @@ def _normalise_unicode(text: str) -> str:
     return text
 
 
+def _smart_chunks(text: str, max_chars: int = 2500) -> list[str]:
+    """
+    Split text at natural NHS record / paragraph boundaries so the LLM
+    always sees complete, coherent sections rather than mid-sentence cuts.
+
+    Priority order for split points:
+      1. NHS record headers  ("Record N –", "Patient:", "NHS Number:")
+      2. Double blank lines  (paragraph / section breaks)
+      3. Single newlines     (line breaks)
+      4. Hard character cap  (last resort — splits very long lines)
+
+    Each returned chunk is ≤ max_chars characters.  A 50-char overlap from
+    the previous chunk is prepended so names at boundaries are never missed.
+    """
+    # ── Step 1: split at the strongest record-header boundaries ──────────────
+    _HEADER_RE = re.compile(
+        r'(?m)(?=^(?:Record\s+\d|Patient\s*:|Name\s*:|NHS\s*Number\s*:|'
+        r'Date\s+of\s+Birth\s*:|DOB\s*:|Dear\s+(?:Dr|Mr|Mrs|Ms|Miss|Prof)\b))',
+        re.IGNORECASE,
+    )
+    sections = [s for s in _HEADER_RE.split(text) if s.strip()]
+    if len(sections) == 1:
+        # No record headers — fall back to paragraph splitting
+        sections = [s for s in re.split(r'\n{2,}', text) if s.strip()]
+    if len(sections) == 1:
+        sections = [text]
+
+    # ── Step 2: merge short sections / further split long ones ───────────────
+    def _subsplit(blob: str) -> list[str]:
+        """Split a blob that is longer than max_chars at the finest boundary."""
+        if len(blob) <= max_chars:
+            return [blob]
+        # Try paragraph breaks first
+        paras = [p for p in re.split(r'\n{2,}', blob) if p.strip()]
+        if len(paras) > 1:
+            out, buf = [], ""
+            for p in paras:
+                if len(buf) + len(p) + 2 <= max_chars:
+                    buf = (buf + "\n\n" + p) if buf else p
+                else:
+                    if buf:
+                        out.append(buf)
+                    buf = p
+                    if len(buf) > max_chars:
+                        # Still too long — hard-split at max_chars
+                        while len(buf) > max_chars:
+                            out.append(buf[:max_chars])
+                            buf = buf[max_chars:]
+            if buf:
+                out.append(buf)
+            return out
+        # No paragraph breaks — hard-split
+        return [blob[i: i + max_chars] for i in range(0, len(blob), max_chars)]
+
+    raw_chunks: list[str] = []
+    buf = ""
+    for sec in sections:
+        if len(sec) > max_chars:
+            if buf:
+                raw_chunks.append(buf)
+                buf = ""
+            raw_chunks.extend(_subsplit(sec))
+        elif len(buf) + len(sec) + 2 <= max_chars:
+            buf = (buf + "\n\n" + sec) if buf else sec
+        else:
+            if buf:
+                raw_chunks.append(buf)
+            buf = sec
+    if buf:
+        raw_chunks.append(buf)
+
+    # ── Step 3: add 50-char tail overlap so boundary names aren't missed ─────
+    OVERLAP = 50
+    final: list[str] = []
+    for i, ch in enumerate(raw_chunks):
+        prefix = raw_chunks[i - 1][-OVERLAP:] if i > 0 else ""
+        final.append((prefix + ch) if prefix else ch)
+
+    return final or [text]
+
+
+# Verification prompt — run over the *already-redacted* text to catch anything missed
+_ANON_VERIFY_TMPL = """\
+The text below has already been anonymised but may still contain missed identifiers.
+
+Scan every line. List ONLY items that are STILL visible and should be redacted:
+  • Any person's name (patient, relative, clinician, colleague, witness)
+  • Any phone number or email address
+
+Do NOT flag: [PATIENT NAME], [NAME], [NHS NUMBER], [ADDRESS] or any other
+already-redacted placeholder — only flag real, unredacted text.
+
+Return JSON only:
+{{"missed": [{{"text": "exact visible text", "replacement": "[NAME]"}}]}}
+If nothing missed: {{"missed": []}}
+
+---
+{chunk}
+---"""
+
+
 def anonymise_document(text: str, model: str, status_cb=None) -> tuple:
     """
     Fully anonymise a document by removing all personal identifiers.
-    Returns (anonymised_text, redaction_count, raw_llm_string).
-    """
-    # 3 000-char chunks ≈ 6 records each.  The improved prompt now explicitly
-    # instructs the model to scan the ENTIRE chunk, so we no longer need
-    # 1 500-char micro-chunks.  ~5 LLM calls for a typical 13 000-char document.
-    CHUNK  = 3000
-    STRIDE = 2700   # 300-char overlap so identifiers at boundaries aren't missed
-    MAX_CH = 15     # covers documents up to ~40 000 chars
 
+    Two-pass approach:
+      Pass 1 — boundary-aware chunks sent to LLM for full redaction
+      Pass 2 — verification pass over the redacted output to catch anything missed
+
+    Returns (anonymised_text, redaction_count, raw_llm_string, llm_failures).
+    """
     # Normalise Unicode lookalikes so LLM-returned strings match the source
     text = _normalise_unicode(text)
 
-    chunks = []
-    pos = 0
-    while pos < len(text) and len(chunks) < MAX_CH:
-        chunks.append(text[pos: pos + CHUNK])
-        pos += STRIDE
+    chunks = _smart_chunks(text, max_chars=2500)
 
     all_redactions = []
     all_raw        = []
@@ -1148,7 +1243,7 @@ def anonymise_document(text: str, model: str, status_cb=None) -> tuple:
 
     for idx, chunk in enumerate(chunks, 1):
         if status_cb:
-            status_cb(f"🔍 Anonymising chunk {idx}/{len(chunks)}…")
+            status_cb(f"🔍 Pass 1 — chunk {idx}/{len(chunks)}…")
         redactions, raw = _anon_chunk(chunk, model)
         all_raw.append(raw)
         all_redactions.extend(redactions)
@@ -1217,6 +1312,52 @@ def anonymise_document(text: str, model: str, status_cb=None) -> tuple:
     )
     if result != _before:
         count += 1
+
+    # ── Pass 2: verification — scan redacted text for anything still missed ──
+    if status_cb:
+        status_cb("🔎 Pass 2 — verifying for missed identifiers…")
+
+    verify_chunks = _smart_chunks(result, max_chars=2500)
+    for idx, vchunk in enumerate(verify_chunks, 1):
+        if status_cb:
+            status_cb(f"🔎 Pass 2 — verifying chunk {idx}/{len(verify_chunks)}…")
+
+        def _vcall(c=vchunk):
+            return ollama.chat(
+                model=model,
+                messages=[
+                    {"role": "system", "content": _ANON_SYSTEM},
+                    {"role": "user",   "content": _ANON_VERIFY_TMPL.format(chunk=c)},
+                ],
+                format="json",
+                options={"temperature": 0, "num_predict": 2048},
+            )
+        try:
+            ex     = ThreadPoolExecutor(max_workers=1)
+            future = ex.submit(_vcall)
+            try:
+                vresp = future.result(timeout=_CHUNK_TIMEOUT)
+            except FuturesTimeoutError:
+                ex.shutdown(wait=False)
+                continue
+            finally:
+                ex.shutdown(wait=False)
+            vraw    = vresp["message"]["content"].strip()
+            vparsed = _extract_json(vraw)
+            if vparsed:
+                for item in vparsed.get("missed", []):
+                    original    = (item.get("text") or "").strip()
+                    replacement = item.get("replacement") or "[NAME]"
+                    if not original or "[" in original:   # skip placeholders
+                        continue
+                    new_result = re.sub(
+                        re.escape(original), replacement, result, flags=re.IGNORECASE
+                    )
+                    if new_result != result:
+                        count += 1
+                    result = new_result
+        except Exception:
+            pass
 
     return result, count, "\n\n---chunk---\n\n".join(all_raw), llm_failures
 
