@@ -146,9 +146,20 @@ Apply UK GDPR / DPA 2018 / ICO guidance and the BMA guidance on access to health
   data (not their professional act) is being recorded.
 • NHS Trust, hospital, GP practice, clinic or department names.
 • Standard appointment dates, referral acknowledgements, administrative notices.
+• Job titles and role descriptions alone (e.g. "SEN coordinator", "class teacher",
+  "key worker", "social worker", "named nurse", "care coordinator") — these are NOT
+  personal data. Only redact the individual's personal name, not their job title.
 • In a paediatric record (patient described as "child"), the named parent or guardian
   listed in the record header (e.g. "Parent/Guardian: Mrs Chloe Green") is the SAR
-  requestor acting on the child's behalf — do NOT redact their name.
+  requestor acting on the child's behalf — do NOT redact their name ANYWHERE in the
+  document, even when it appears again in the body or in correspondence.
+• Clinician and healthcare professional names (including abbreviated forms such as
+  "Dr M. Robertson", "Dr J. Cole", "Nurse Ward") when appearing in their professional
+  capacity — do NOT redact. This applies to ALL registered health professionals:
+  GPs, hospital consultants, nurses, pharmacists, physiotherapists, occupational
+  therapists, optometrists, dentists, radiographers, and any other AHP or clinical
+  specialist — regardless of whether they work at this practice or an external clinic.
+  This overrides the abbreviated-name rule below.
 
 ━━━ PROPOSE FOR AUTO-REDACTION ━━━
 Copy the EXACT tag name. Redact the minimum span — a name or phrase, not a whole sentence.
@@ -165,13 +176,25 @@ THIRD_PARTY_IDENTIFIER   — name or identifying detail of any private individua
                            Device serial numbers for the patient's personal medical devices
                            (insulin pumps, implants, CGM sensors, home monitors) are personal
                            data — flag as THIRD_PARTY_IDENTIFIER.
-                           When you flag a PERSONAL email address (firstname.lastname@ or
-                           similar format) belonging to a named private individual, ALSO
-                           create a separate THIRD_PARTY_IDENTIFIER entry for that person's
-                           name (e.g. if you flag "anita.lobo@company.co.uk", also flag
-                           "Anita Lobo"). Do NOT apply this rule to generic role/dept
-                           addresses (support@, info@, admin@, victim.support@) — and
-                           NEVER use it to flag clinicians in their professional capacity.
+                           When you flag a PERSONAL email address (firstname.lastname@,
+                           initial.surname@, or similar personal format) belonging to a
+                           named private individual, ALSO create a separate THIRD_PARTY_IDENTIFIER
+                           entry for that person's name (e.g. if you flag
+                           "anita.lobo@company.co.uk", also flag "Anita Lobo"; if you flag
+                           "s.allen@sleep-centre-personal.com", also flag "Sophie Allen").
+                           Do NOT apply this rule to generic role/dept addresses (support@,
+                           info@, admin@, victim.support@) — and NEVER use it to flag
+                           clinicians in their professional capacity.
+                           Abbreviated names (e.g. "C. Murray", "Anna S.", "P. Hall") ARE
+                           third-party identifiers when they refer to a NON-CLINICIAN private
+                           individual — redact them exactly as written. Do NOT apply this to
+                           clinicians or healthcare professionals acting in their professional
+                           capacity (e.g. "Dr M. Robertson", "Dr J. Cole" are NOT redacted).
+                           Police incident reference numbers, crime reference numbers, and
+                           Motor Insurers' Bureau (MIB) claim references (e.g. "MV/2024/B1/04471",
+                           "URN 01AZ/12345/23") are THIRD_PARTY_IDENTIFIER — they are linked
+                           to a named third party in the police or insurance system and must
+                           be redacted.
 CONFIDENTIAL_DISCLOSURE  — information given in confidence or anonymously by a third party
                            (ICO guidance: the identity of the third party may be withheld).
                            Specific descriptions of a named or identifiable third party's
@@ -185,12 +208,23 @@ OTHER_PATIENT_DATA       — data clearly belonging to a different patient: misf
                            name, date of birth, NHS number, address, and any other personal
                            identifiers — create a SEPARATE entry for each field.
 AGENCY_CONFIDENTIAL_INFO — (a) the name and direct contact details of any social worker,
-                           police officer, housing officer, probation officer or school
-                           staff member named in their professional capacity in a referral
-                           or report — they work for a DIFFERENT data controller and their
-                           personal work details are not the patient's data to receive;
-                           (b) the substantive content of any social work, police, probation
-                           or school report that names or identifies a third party.
+                           police officer, prison officer, custody officer, housing officer,
+                           probation officer, school staff member, university counsellor,
+                           external therapist (including NHS therapists in specialist services
+                           such as eating disorder, IAPT, psychological therapy, or substance
+                           misuse services), support group coordinator, interpreter, solicitor
+                           or legal representative, or private/employer-commissioned
+                           physiotherapist or occupational health adviser
+                           named individually in their professional capacity in a referral,
+                           report, or correspondence — they work for a DIFFERENT data
+                           controller and their personal work details are not the patient's
+                           data to receive;
+                           (b) the substantive content of any social work, police, probation,
+                           school, or agency report that names or identifies a third party.
+                           Do NOT redact the agency or organisation name itself (e.g.
+                           'Kent Adult Social Care', 'Warwickshire Children's Services',
+                           'Women's Refuge') — only the personal names and direct contact
+                           details of named individuals working for those organisations.
                            Always create SEPARATE entries for the name and the phone
                            number — never bundle them. If you find a phone number for an
                            agency professional, you MUST also create a separate entry for
@@ -377,6 +411,45 @@ def _detect_patient_name(filename: str, text: str = "") -> str:
     return ""
 
 
+def _detect_guardian_name(text: str) -> str:
+    """
+    Extract the named parent/guardian from a paediatric record header.
+    Returns the full name string (including title such as 'Mrs') as it
+    appears before any parenthetical annotation, or '' if not found.
+    """
+    sample = text[:1500]
+    for pat in (
+        r'(?:Parent/Guardian|Registered Parent):\s+'
+        r'((?:Mr|Mrs|Ms|Miss|Dr|Prof)\.?\s+[A-Za-z][a-z]+\s+[A-Z][A-Za-z]+)',
+        r'(?:Parent/Guardian|Registered Parent):\s+'
+        r'([A-Za-z][a-z]+\s+[A-Z][A-Za-z]+)',
+    ):
+        m = re.search(pat, sample)
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
+def _detect_patient_dob(text: str) -> str:
+    """
+    Extract the patient's own DOB from the record header (first 1500 chars).
+    Returns the date string as it appears (e.g. '27/06/1978') or '' if not found.
+    Used to prevent the LLM from accidentally flagging the patient's own DOB
+    as third-party data.
+    """
+    sample = text[:1500]
+    for pat in (
+        r'DOB:\s+(\d{1,2}/\d{1,2}/\d{4})',
+        r'Date of Birth:\s+(\d{1,2}/\d{1,2}/\d{4})',
+        r'DOB:\s+(\d{2}\.\d{2}\.\d{4})',
+        r'D\.O\.B\.?:\s+(\d{1,2}/\d{1,2}/\d{4})',
+    ):
+        m = re.search(pat, sample)
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
 def _analyse_chunk(chunk: str, model: str, patient_line: str, extra_instructions: str = "") -> tuple:
     """Send one chunk to the LLM. Returns (result_dict, raw_string)."""
     user_msg = _SAR_PROMPT_TMPL.format(patient_line=patient_line, chunk=chunk)
@@ -462,6 +535,16 @@ def _expand_name_redactions(proposed: list, text: str, patient_name: str = "") -
         "street", "lane", "avenue", "close", "drive", "house", "flat", "office",
         "woman", "man", "lady", "person", "child", "boy", "girl", "family",
         "local", "nearby", "down",
+        # Role / occupation words — prevent expanding role titles into name tokens
+        "social", "worker", "coordinator", "senior", "care", "staff", "health",
+        "support", "key", "lead", "head", "deputy", "assistant", "registered",
+        "qualified", "community", "liaison", "service", "services", "team",
+        "manager", "director", "officer", "nurse", "doctor", "consultant",
+        "specialist", "therapist", "counsellor", "advisor", "adviser",
+        # Salutation / correspondence words
+        "dear", "tel", "ref", "re", "via", "attn",
+        # Honorifics / titles — prevent "(Mrs" being extracted as a name token
+        "mrs", "miss", "prof", "sir", "rev", "lord", "dame",
     }
 
     for item in proposed:
@@ -523,6 +606,12 @@ def _expand_name_redactions(proposed: list, text: str, patient_name: str = "") -
         if len(parts) < 2:
             continue   # already a single word — nothing to expand
 
+        # Do NOT expand email salutation strings ("Dear Dr X", "To Whom", etc.)
+        # These are not names — expanding them causes clinician names to be redacted.
+        _SALUTATIONS = {"dear", "to", "re", "attn", "attention"}
+        if parts[0].lower().strip(".,;:") in _SALUTATIONS:
+            continue
+
         # Do NOT expand address strings — they contain place names that occur
         # legitimately in institution names like "Bradford Royal Infirmary".
         _ADDRESS_KEYWORDS = {
@@ -554,15 +643,26 @@ def _expand_name_redactions(proposed: list, text: str, patient_name: str = "") -
                 continue
 
             # At least one occurrence must be OUTSIDE the span of the full name
+            # AND not embedded in an organisation/company name.
+            _ORG_SUFFIXES_RE = re.compile(
+                r'\s*(?:&|and)\s+[A-Z]|\b(?:LLP|Ltd|PLC|plc|Inc|Trust|NHS|LTD)\b',
+                re.IGNORECASE,
+            )
             standalone = False
             for m in matches:
                 # Build the surrounding window and check full name isn't there
                 window_start = max(0, m.start() - len(raw) - 5)
                 window_end   = min(len(text), m.end() + len(raw) + 5)
                 window       = text[window_start:window_end]
-                if raw.lower() not in window.lower():
-                    standalone = True
-                    break
+                if raw.lower() in window.lower():
+                    continue  # full name also present — not a standalone occurrence
+                # Check that the immediate right-hand context doesn't suggest this
+                # token is the first word of an org name ("Thompson & Reed LLP")
+                right_ctx = text[m.end(): m.end() + 20]
+                if _ORG_SUFFIXES_RE.match(right_ctx):
+                    continue  # looks like org name — skip
+                standalone = True
+                break
 
             if standalone:
                 extra.append({
@@ -608,10 +708,13 @@ def _expand_agency_contacts(proposed: list, text: str, patient_name: str = "") -
 
     _INSTITUTIONAL_WORDS = {
         "hospital", "infirmary", "royal", "nhs", "trust", "refuge", "liaison",
-        "services", "clinic", "surgery", "centre", "center", "council",
+        "services", "service", "clinic", "surgery", "centre", "center", "council",
         "authority", "department", "office", "association", "police", "court",
         "school", "college", "university", "academy", "foundation", "unit",
         "ward", "team", "group", "limited", "ltd", "plc", "inc", "officer",
+        # Social/care sector words — prevent 'Kent Adult Social' matching as a person
+        "social", "adult", "care", "health", "mental", "children", "young",
+        "community", "housing", "probation", "welfare", "voluntary",
     }
 
     def _is_institutional(name: str) -> bool:
@@ -705,6 +808,71 @@ def _expand_agency_contacts(proposed: list, text: str, patient_name: str = "") -
                     break
 
     return proposed + extra
+
+
+def _expand_agency_professionals(proposed: list, text: str, patient_name: str = "") -> list:
+    """
+    Code-level fallback to catch named agency professionals that the LLM misses
+    even when prompted.  Targets three high-miss patterns:
+
+      1. "by [Name] (private/independent/employer-commissioned [role])"
+         e.g. "by Lisa Torn (private physiotherapist, commissioned by employer's insurer)"
+
+      2. "[Role] [Name] ([org/service]...)"
+         e.g. "Therapist Claire Inder (NHS Eating Disorder Service, Peterborough)"
+
+      3. "solicitor [Name] (" — solicitors named in correspondence
+         e.g. "solicitor James Hazeldine (Hazeldine & Partners LLP)"
+
+    Adds new AGENCY_CONFIDENTIAL_INFO entries for matched names not already proposed.
+    """
+    _NAME = r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)'
+
+    _PATTERNS = [
+        # "by [Name] (private / independent / employer-commissioned [clinical role])"
+        re.compile(
+            r'\bby\s+' + _NAME +
+            r'\s*\((?:private|independent|employer[- ]commissioned)\s*'
+            r'(?:physiotherapist|physio|therapist|counsellor|psychologist|'
+            r'occupational health)',
+            re.IGNORECASE,
+        ),
+        # "[Clinical role title] [Name] ([org"
+        re.compile(
+            r'\b(?:Therapist|Physiotherapist|Counsellor|Psychologist|'
+            r'Occupational Health Adviser|Occupational Health Advisor)\s+' +
+            _NAME + r'\s*[\(,]',
+            re.IGNORECASE,
+        ),
+        # "solicitor [Name]" or "from solicitor [Name]"
+        re.compile(
+            r'\bsolicitor\s+' + _NAME + r'\b',
+            re.IGNORECASE,
+        ),
+    ]
+
+    _pn_lower = (patient_name or "").strip().lower()
+    _existing = {(p.get("text") or "").strip().lower() for p in proposed}
+
+    additions = []
+    for pat in _PATTERNS:
+        for m in pat.finditer(text):
+            name = m.group(1).strip()
+            if not name:
+                continue
+            if name.lower() in _existing:
+                continue
+            if _pn_lower and name.lower() == _pn_lower:
+                continue
+            additions.append({
+                "text":        name,
+                "tag":         "AGENCY_CONFIDENTIAL_INFO",
+                "reason":      "Named agency professional (pattern-based extraction).",
+                "replacement": "[REDACTED - agency confidential information]",
+            })
+            _existing.add(name.lower())
+
+    return proposed + additions
 
 
 def llm_analyse_document(
@@ -848,7 +1016,20 @@ def llm_analyse_document(
             _existing_proposed_lower.add(name.lower())
 
     # ── Post-processing: remove clinician-only names ──────────────────────────
+    # Suppress THIRD_PARTY_IDENTIFIER redactions for registered health
+    # professionals appearing in their professional capacity.
+    # Guards:
+    #   (a) Leading "Dr" / "Prof" prefix within 8 chars before the name.
+    #   (b) Trailing ", Consultant [Specialty]" or similar professional title
+    #       within 60 chars after the name — catches un-titled clinicians such
+    #       as "Frank Miller, Consultant Optometrist".
     _CLINICIAN_TITLE_RE = re.compile(r'\b(?:Dr|Prof(?:essor)?)\s+', re.IGNORECASE)
+    _CLINICIAN_TRAILING_RE = re.compile(
+        r',?\s*(?:Consultant|Senior\s+Consultant|Lead\s+Consultant|'
+        r'Specialist|Principal|Registrar|Optometrist|Ophthalmologist|'
+        r'Dentist|Radiographer)\b',
+        re.IGNORECASE,
+    )
     filtered_proposed = []
     for item in all_proposed:
         if item.get("tag") == "THIRD_PARTY_IDENTIFIER":
@@ -859,17 +1040,102 @@ def llm_analyse_document(
                 ))
                 if occurrences and all(
                     _CLINICIAN_TITLE_RE.search(text[max(0, m.start() - 8): m.start()])
+                    or _CLINICIAN_TRAILING_RE.match(text[m.end(): m.end() + 60])
                     for m in occurrences
                 ):
                     continue
         filtered_proposed.append(item)
     all_proposed = filtered_proposed
 
-    # Expand multi-word name redactions to catch first-name-only mentions.
+    # ── Institutional-text filter ────────────────────────────────────────────
+    # Remove proposed redactions whose text is clearly an organisation/agency
+    # name rather than a person name. This catches cases where the LLM ignores
+    # the DO NOT REDACT instruction for agency names (e.g. "Kent Adult Social",
+    # "Suffolk County Council", "Bluebird Care Ltd").
+    _INST_FILTER_WORDS = {
+        "adult", "social", "care", "health", "mental", "children", "young",
+        "services", "service", "authority", "council", "trust", "nhs",
+        "royal", "hospital", "infirmary", "refuge", "centre", "center",
+        "community", "primary", "secondary", "support", "unit",
+        "foundation", "association", "police", "probation", "housing",
+        # Local government / geographic body words
+        "county", "borough", "district", "city", "parish", "metropolitan",
+        # Org-type suffixes (even 1 institutional word + suffix = org)
+        "limited", "ltd", "llp", "plc", "inc",
+    }
+    _ORG_SUFFIX_WORDS = {"limited", "ltd", "llp", "plc", "inc"}
+
+    def _looks_institutional(t: str) -> bool:
+        words = [w.rstrip('.,') for w in t.lower().split()]
+        # Org suffix alone lowers the threshold: 1 other institutional word suffices
+        if any(w in _ORG_SUFFIX_WORDS for w in words):
+            return any(w in _INST_FILTER_WORDS for w in words)
+        return sum(1 for w in words if w in _INST_FILTER_WORDS) >= 2
+
+    all_proposed = [
+        p for p in all_proposed
+        if not _looks_institutional(p.get("text", ""))
+    ]
+
+    # ── Guardian name filter ─────────────────────────────────────────────────
+    # In paediatric records the registered parent/guardian must not be redacted.
+    # The prompt instructs the LLM to leave them alone, but as a safety net we
+    # detect the guardian name from the record header and strip any proposed
+    # redactions that target it.
+    _guardian_name = _detect_guardian_name(text)
+    if _guardian_name:
+        _gn_lower = _guardian_name.strip().lower()
+        all_proposed = [
+            p for p in all_proposed
+            if _gn_lower not in (p.get("text") or "").strip().lower()
+        ]
+
+    # ── Patient DOB filter ───────────────────────────────────────────────────
+    # The LLM occasionally misidentifies the patient's own DOB as a third-party
+    # date (e.g. "neighbour's DOB", "mother's DOB"). Since the patient is
+    # entitled to their own DOB, remove any proposed redaction that exactly
+    # matches the DOB from the record header.
+    _patient_dob = _detect_patient_dob(text)
+    if _patient_dob:
+        all_proposed = [
+            p for p in all_proposed
+            if (p.get("text") or "").strip() != _patient_dob
+        ]
+
+    # ── Police / incident reference post-processor ───────────────────────────
+    # The LLM sometimes misses police incident reference numbers even when
+    # explicitly prompted. This regex scans the text for reference-number
+    # patterns that appear near police/legal context keywords and adds them
+    # as THIRD_PARTY_IDENTIFIER if not already proposed.
+    _POLICE_REF_RE = re.compile(
+        r'\b([A-Z]{1,4}/\d{4}/[A-Z0-9]{1,5}/\d{3,6})\b'
+    )
+    _POLICE_CONTEXT_RE = re.compile(
+        r'(?i)(?:police|incident|crime|MIB|motor insur|reference|URN|log\s*number)',
+    )
+    _existing_texts = {(p.get("text") or "").strip() for p in all_proposed}
+    for m in _POLICE_REF_RE.finditer(text):
+        ref = m.group(1)
+        if ref in _existing_texts:
+            continue
+        # Check surrounding context (200 chars window) for police/legal keywords
+        window_start = max(0, m.start() - 100)
+        window_end   = min(len(text), m.end() + 100)
+        window = text[window_start:window_end]
+        if _POLICE_CONTEXT_RE.search(window):
+            all_proposed.append({
+                "text":        ref,
+                "tag":         "THIRD_PARTY_IDENTIFIER",
+                "reason":      "Police/incident reference number linked to a third party.",
+                "replacement": "[REDACTED - third-party personal data]",
+            })
+            _existing_texts.add(ref)
+
     # Pass patient_name so the expander never creates a redaction target that
     # matches the patient's own name parts (e.g. a shared family surname).
     all_proposed = _expand_name_redactions(all_proposed, text, patient_name)
     all_proposed = _expand_agency_contacts(all_proposed, text, patient_name)
+    all_proposed = _expand_agency_professionals(all_proposed, text, patient_name)
 
     return {
         "proposed_redactions": all_proposed,
