@@ -3970,9 +3970,9 @@ elif tool_mode == "anon":
 
         for i, uf in enumerate(all_anon_files):
             status.info(f"Processing {uf.name}…")
-            text, _fmt, _extra = ingest_file(uf)
+            _doc, text, _err, _ocr = ingest_file(uf)
             if not text.strip():
-                results.append({"name": uf.name, "text": "", "count": 0, "error": "Could not extract text"})
+                results.append({"name": uf.name, "text": "", "count": 0, "error": _err or "Could not extract text"})
                 prog.progress((i + 1) / len(all_anon_files))
                 continue
 
