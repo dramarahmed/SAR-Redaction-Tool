@@ -1174,6 +1174,31 @@ def anonymise_document(text: str, model: str, status_cb=None) -> tuple:
             count += 1
         result = new_result
 
+    # ── Regex fallbacks — catch identifiers the LLM may have missed ──────────
+    # NHS numbers: 3 digits, space, 3 digits, space, 4 digits
+    _before = result
+    result = re.sub(r'\b(\d{3}[ \u00a0\u202f]\d{3}[ \u00a0\u202f]\d{4})\b', '[NHS NUMBER]', result)
+    if result != _before:
+        count += 1
+
+    # UK postcodes (e.g. LU2 9DY, SW1A 1AA, M3 2PX)
+    _before = result
+    result = re.sub(
+        r'\b([A-Z]{1,2}\d{1,2}[A-Z]?[ \u00a0]?\d[A-Z]{2})\b',
+        '[POSTCODE]', result, flags=re.IGNORECASE,
+    )
+    if result != _before:
+        count += 1
+
+    # NI numbers (e.g. AB 12 34 56 C)
+    _before = result
+    result = re.sub(
+        r'\b([A-CEGHJ-PR-TW-Z]{2}[ ]?\d{2}[ ]?\d{2}[ ]?\d{2}[ ]?[A-D])\b',
+        '[NI NUMBER]', result, flags=re.IGNORECASE,
+    )
+    if result != _before:
+        count += 1
+
     return result, count, "\n\n---chunk---\n\n".join(all_raw)
 
 
