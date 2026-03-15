@@ -1093,6 +1093,36 @@ def _anon_chunk(chunk: str, model: str) -> tuple:
     return parsed.get("redactions", []) or [], raw
 
 
+def _normalise_unicode(text: str) -> str:
+    """
+    Replace Unicode lookalike whitespace and punctuation with their ASCII
+    equivalents so LLM output can be matched back against the source text.
+
+    Handles non-breaking spaces (U+00A0), narrow no-break spaces (U+202F),
+    non-breaking hyphens (U+2011), en/em dashes (U+2013/U+2014), and other
+    common Unicode substitutes found in NHS documents.
+    """
+    replacements = {
+        "\u00a0": " ",   # non-breaking space
+        "\u202f": " ",   # narrow no-break space (used in NHS numbers)
+        "\u2009": " ",   # thin space
+        "\u2007": " ",   # figure space
+        "\u2011": "-",   # non-breaking hyphen
+        "\u2012": "-",   # figure dash
+        "\u2013": "-",   # en dash
+        "\u2014": "-",   # em dash
+        "\u2018": "'",   # left single quotation mark
+        "\u2019": "'",   # right single quotation mark
+        "\u201c": '"',   # left double quotation mark
+        "\u201d": '"',   # right double quotation mark
+        "\u2022": "*",   # bullet
+        "\u2010": "-",   # hyphen (Unicode)
+    }
+    for orig, repl in replacements.items():
+        text = text.replace(orig, repl)
+    return text
+
+
 def anonymise_document(text: str, model: str, status_cb=None) -> tuple:
     """
     Fully anonymise a document by removing all personal identifiers.
@@ -1101,6 +1131,9 @@ def anonymise_document(text: str, model: str, status_cb=None) -> tuple:
     CHUNK  = 6000
     STRIDE = 5500
     MAX_CH = 8
+
+    # Normalise Unicode lookalikes so LLM-returned strings match the source
+    text = _normalise_unicode(text)
 
     chunks = []
     pos = 0
