@@ -1061,36 +1061,51 @@ If nothing needs redacting return: {{"redactions": []}}
 
 
 def _anon_chunk(chunk: str, model: str) -> tuple:
-    """Send one chunk to the LLM for full anonymisation. Returns (redactions_list, raw_string)."""
-    def _call():
-        return ollama.chat(
+    """Send one chunk to the LLM for full anonymisation. Returns (redactions_list, raw_string).
+
+    Tries with format='json' first (faster, more reliable on qwen/llama).
+    Falls back to plain text mode for models that don't support JSON forcing.
+    """
+    messages = [
+        {"role": "system", "content": _ANON_SYSTEM},
+        {"role": "user",   "content": _ANON_PROMPT_TMPL.format(chunk=chunk)},
+    ]
+
+    def _call(force_json: bool):
+        kwargs = dict(
             model=model,
-            messages=[
-                {"role": "system", "content": _ANON_SYSTEM},
-                {"role": "user",   "content": _ANON_PROMPT_TMPL.format(chunk=chunk)},
-            ],
-            format="json",
-            options={"temperature": 0, "num_predict": 4096},  # anonymise returns many more entries than SAR
+            messages=messages,
+            options={"temperature": 0, "num_predict": 4096},
         )
+        if force_json:
+            kwargs["format"] = "json"
+        return ollama.chat(**kwargs)
 
-    try:
-        ex     = ThreadPoolExecutor(max_workers=1)
-        future = ex.submit(_call)
+    raw = ""
+    for use_json in (True, False):          # try JSON mode first, plain text as fallback
         try:
-            resp = future.result(timeout=_CHUNK_TIMEOUT)
-        except FuturesTimeoutError:
-            ex.shutdown(wait=False)
-            return [], f"[TIMEOUT] LLM did not respond within {_CHUNK_TIMEOUT}s"
-        finally:
-            ex.shutdown(wait=False)
-        raw = resp["message"]["content"].strip()
-    except Exception as exc:
-        return [], f"[LLM ERROR] {exc}"
+            ex     = ThreadPoolExecutor(max_workers=1)
+            future = ex.submit(_call, use_json)
+            try:
+                resp = future.result(timeout=_CHUNK_TIMEOUT)
+            except FuturesTimeoutError:
+                ex.shutdown(wait=False)
+                return [], f"[TIMEOUT] LLM did not respond within {_CHUNK_TIMEOUT}s"
+            finally:
+                ex.shutdown(wait=False)
+            raw = resp["message"]["content"].strip()
+        except Exception as exc:
+            raw = f"[LLM ERROR] {exc}"
+            continue
 
-    parsed = _extract_json(raw)
-    if parsed is None:
-        return [], raw
-    return parsed.get("redactions", []) or [], raw
+        parsed = _extract_json(raw)
+        if parsed is not None:
+            return parsed.get("redactions", []) or [], raw
+
+        if not use_json:
+            break   # both modes tried, give up
+
+    return [], f"[PARSE FAILED] {raw[:300]}"
 
 
 def _normalise_unicode(text: str) -> str:
@@ -1143,6 +1158,7 @@ def anonymise_document(text: str, model: str, status_cb=None) -> tuple:
 
     all_redactions = []
     all_raw        = []
+    llm_failures   = 0
 
     for idx, chunk in enumerate(chunks, 1):
         if status_cb:
@@ -1150,6 +1166,8 @@ def anonymise_document(text: str, model: str, status_cb=None) -> tuple:
         redactions, raw = _anon_chunk(chunk, model)
         all_raw.append(raw)
         all_redactions.extend(redactions)
+        if raw.startswith("[PARSE FAILED]") or raw.startswith("[TIMEOUT]") or raw.startswith("[LLM ERROR]"):
+            llm_failures += 1
 
     # Deduplicate by text value (case-insensitive)
     seen  = set()
@@ -1199,7 +1217,7 @@ def anonymise_document(text: str, model: str, status_cb=None) -> tuple:
     if result != _before:
         count += 1
 
-    return result, count, "\n\n---chunk---\n\n".join(all_raw)
+    return result, count, "\n\n---chunk---\n\n".join(all_raw), llm_failures
 
 
 def _analyse_chunk(chunk: str, model: str, patient_line: str, extra_instructions: str = "") -> tuple:
@@ -4037,8 +4055,12 @@ elif tool_mode == "anon":
             def _cb(msg, _name=uf.name):
                 status.info(f"**{_name}** — {msg}")
 
-            anon_text, count, _raw = anonymise_document(text, selected_model, status_cb=_cb)
-            results.append({"name": uf.name, "text": anon_text, "count": count, "error": None})
+            anon_text, count, _raw, llm_fails = anonymise_document(text, selected_model, status_cb=_cb)
+            warn = (f"⚠️ {llm_fails} chunk(s) failed LLM parsing — "
+                    "only regex-based redactions (NHS numbers, postcodes) were applied. "
+                    "Try switching to qwen2.5:14b or qwen2.5:32b for full name/DOB redaction."
+                    ) if llm_fails else None
+            results.append({"name": uf.name, "text": anon_text, "count": count, "error": warn})
             prog.progress((i + 1) / len(all_anon_files))
 
         # Build ZIP of anonymised .txt files
