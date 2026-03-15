@@ -989,6 +989,160 @@ Document excerpt:
 
 _CHUNK_TIMEOUT = 120   # seconds to wait for a single LLM chunk response
 
+# =============================================================================
+# Full-anonymisation prompt
+# =============================================================================
+
+_ANON_SYSTEM = (
+    "You are a medical records anonymisation specialist. "
+    "You respond with valid JSON only. No preamble, no explanation, no markdown."
+)
+
+_ANON_PROMPT_TMPL = """\
+You are anonymising a clinical document so it can be shared externally (e.g. with a medical
+defence organisation, insurer, or researcher) with ALL patient and person identifiers removed.
+
+Analyse ONLY the text between the --- markers below.
+
+Flag EVERY piece of information that could identify any individual — patient, clinician,
+relative, witness, or any other person — using the tags below.
+
+TAGS and replacement labels:
+  PATIENT_NAME      — the patient's own full name, surname, first name, or initials
+                      → replaced with [PATIENT NAME]
+  PATIENT_DOB       — the patient's date of birth
+                      → replaced with [DATE OF BIRTH]
+  PATIENT_NHS       — the patient's NHS number
+                      → replaced with [NHS NUMBER]
+  PATIENT_ADDRESS   — the patient's home address (full or partial: street, town, postcode)
+                      → replaced with [ADDRESS]
+  PATIENT_PHONE     — any phone/mobile number belonging to or primarily associated with the patient
+                      → replaced with [PHONE NUMBER]
+  PATIENT_EMAIL     — any email address belonging to or primarily associated with the patient
+                      → replaced with [EMAIL]
+  PATIENT_ID        — any other patient identifier: NI number, passport, driving licence,
+                      hospital reference, insurance policy number, case file number
+                      → replaced with [ID NUMBER]
+  PERSON_NAME       — the full name, surname, or identifiable initials of any OTHER individual
+                      (clinician, relative, carer, witness, social worker, lawyer, etc.)
+                      → replaced with [NAME]
+  PERSON_CONTACT    — a phone number, email address, or postal address belonging to any
+                      other named individual
+                      → replaced with [CONTACT DETAILS]
+
+FLAG EVERYTHING — do not omit borderline cases. When in doubt, flag it.
+
+Do NOT preserve:
+  • Patient name, DOB, NHS number under any circumstances
+  • Any person's full name, even clinicians signing letters
+  • Abbreviated names (e.g. "J. Smith", "Dr A. Brown") — flag these too
+  • Postcodes, partial addresses, or any geographic detail that could re-identify
+
+You MAY leave unredacted:
+  • Organisation / institution names (hospital, GP surgery, trust, school name)
+  • Job titles and roles without a personal name attached
+  • Clinical findings, diagnoses, medications, and treatment content (the clinical substance)
+  • Dates of consultations, referrals, or results (not DOB)
+  • Generic place names used in a clinical context (e.g. "admitted to A&E", "London")
+
+Return valid JSON only — no prose, no markdown fences:
+{{
+  "redactions": [
+    {{"tag": "TAG", "text": "exact text to redact", "replacement": "[LABEL]"}},
+    ...
+  ]
+}}
+
+If nothing needs redacting return: {{"redactions": []}}
+
+---
+{chunk}
+---"""
+
+
+def _anon_chunk(chunk: str, model: str) -> tuple:
+    """Send one chunk to the LLM for full anonymisation. Returns (redactions_list, raw_string)."""
+    def _call():
+        return ollama.chat(
+            model=model,
+            messages=[
+                {"role": "system", "content": _ANON_SYSTEM},
+                {"role": "user",   "content": _ANON_PROMPT_TMPL.format(chunk=chunk)},
+            ],
+            format="json",
+            options={"temperature": 0, "num_predict": 1024},
+        )
+
+    try:
+        ex     = ThreadPoolExecutor(max_workers=1)
+        future = ex.submit(_call)
+        try:
+            resp = future.result(timeout=_CHUNK_TIMEOUT)
+        except FuturesTimeoutError:
+            ex.shutdown(wait=False)
+            return [], f"[TIMEOUT] LLM did not respond within {_CHUNK_TIMEOUT}s"
+        finally:
+            ex.shutdown(wait=False)
+        raw = resp["message"]["content"].strip()
+    except Exception as exc:
+        return [], f"[LLM ERROR] {exc}"
+
+    parsed = _extract_json(raw)
+    if parsed is None:
+        return [], raw
+    return parsed.get("redactions", []) or [], raw
+
+
+def anonymise_document(text: str, model: str, status_cb=None) -> tuple:
+    """
+    Fully anonymise a document by removing all personal identifiers.
+    Returns (anonymised_text, redaction_count, raw_llm_string).
+    """
+    CHUNK  = 6000
+    STRIDE = 5500
+    MAX_CH = 8
+
+    chunks = []
+    pos = 0
+    while pos < len(text) and len(chunks) < MAX_CH:
+        chunks.append(text[pos: pos + CHUNK])
+        pos += STRIDE
+
+    all_redactions = []
+    all_raw        = []
+
+    for idx, chunk in enumerate(chunks, 1):
+        if status_cb:
+            status_cb(f"🔍 Anonymising chunk {idx}/{len(chunks)}…")
+        redactions, raw = _anon_chunk(chunk, model)
+        all_raw.append(raw)
+        all_redactions.extend(redactions)
+
+    # Deduplicate by text value (case-insensitive)
+    seen  = set()
+    dedup = []
+    for r in all_redactions:
+        key = (r.get("text") or "").strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            dedup.append(r)
+
+    # Apply redactions — longest first to avoid partial matches
+    result = text
+    dedup.sort(key=lambda r: len(r.get("text") or ""), reverse=True)
+    count = 0
+    for r in dedup:
+        original    = (r.get("text") or "").strip()
+        replacement = r.get("replacement") or "[ANONYMISED]"
+        if not original:
+            continue
+        new_result = re.sub(re.escape(original), replacement, result, flags=re.IGNORECASE)
+        if new_result != result:
+            count += 1
+        result = new_result
+
+    return result, count, "\n\n---chunk---\n\n".join(all_raw)
+
 
 def _analyse_chunk(chunk: str, model: str, patient_line: str, extra_instructions: str = "") -> tuple:
     """Send one chunk to the LLM. Returns (result_dict, raw_string)."""
@@ -2652,7 +2806,7 @@ for _k, _v in [
     ("proc_summary", []),
     ("play_sound",   None),
     # ── Form filler ──────────────────────────────────────────────────────────
-    ("tool_mode",         "sar"),        # "sar" | "form_filler"
+    ("tool_mode",         "sar"),        # "sar" | "form_filler" | "anon"
     ("ff_stage",          "ff_upload"),  # "ff_upload" | "ff_review" | "ff_export"
     ("ff_epr_text",       ""),
     ("ff_epr_docs",       []),           # list of fitz.Document (for context preview)
@@ -2750,11 +2904,16 @@ with st.sidebar:
     # ── Mode selector ─────────────────────────────────────────────────────────
     _mode_choice = st.radio(
         "Select tool",
-        ["🔒 SAR Redaction", "📋 Forms"],
+        ["🔒 SAR Redaction", "🕵️ Anonymise", "📋 Forms"],
         key="tool_mode_radio",
         label_visibility="collapsed",
     )
-    tool_mode = "form_filler" if "Forms" in _mode_choice else "sar"
+    if "Forms" in _mode_choice:
+        tool_mode = "form_filler"
+    elif "Anonymise" in _mode_choice:
+        tool_mode = "anon"
+    else:
+        tool_mode = "sar"
     st.session_state.tool_mode = tool_mode
 
     st.divider()
@@ -2843,6 +3002,31 @@ with st.sidebar:
                 _reset()
                 st.rerun()
 
+    elif tool_mode == "anon":
+        # ── Anonymise sidebar ─────────────────────────────────────────────────
+        st.markdown(
+            '<div style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);'
+            'border-radius:8px;padding:8px 12px;font-size:.82rem;color:rgba(210,230,255,.8)">'
+            '<b>🕵️ Full Anonymisation</b><br>'
+            'Removes <em>all</em> patient and person identifiers — suitable for sharing with '
+            'MDU, insurers, researchers, or any external body where the patient must not be '
+            'identifiable. Clinical content is preserved.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        st.divider()
+        if st.button("🔄 Start New", use_container_width=True):
+            for _k in ("anon_results", "anon_zip_bytes"):
+                st.session_state.pop(_k, None)
+            st.rerun()
+
+        # Set defaults for SAR-mode variables that won't be defined
+        sar_ref = operator_name = patient_name = ""
+        auto_classify = True
+        show_debug    = False
+        extra_terms   = ""
+        custom_instructions = ""
+
     else:
         # ── Form filler sidebar ───────────────────────────────────────────────
         _ff_stage_labels = {
@@ -2908,6 +3092,9 @@ _logo_tag = f'<img src="{_LOGO_B64}" alt="Logo">' if _LOGO_B64 else \
 if tool_mode == "sar":
     _header_title = "SAR Redaction Tool"
     _header_sub   = "NHS Subject Access Request · Multi-format bundle processor · UK GDPR / DPA 2018 / ICO compliant"
+elif tool_mode == "anon":
+    _header_title = "Full Anonymisation"
+    _header_sub   = "Remove all patient & person identifiers · Suitable for MDU, insurers, researchers · 100% local AI"
 else:
     _header_title = "Forms"
     _header_sub   = "Complete insurance & GP report forms automatically from patient records · 100% local AI"
@@ -3724,6 +3911,135 @@ elif tool_mode == "sar" and st.session_state.stage == "export":
     if st.button("🔄 Process Another SAR", use_container_width=True):
         _reset()
         st.rerun()
+
+
+# =============================================================================
+# FULL ANONYMISATION MODE
+# =============================================================================
+
+elif tool_mode == "anon":
+    st.divider()
+    st.subheader("① Upload Documents to Anonymise")
+    st.caption(
+        "Upload one or more clinical documents. All patient and person identifiers will be "
+        "automatically removed and replaced with labelled placeholders — e.g. **[PATIENT NAME]**, "
+        "**[DATE OF BIRTH]**, **[NAME]**. Clinical content is preserved.  \n"
+        "Supported: **PDF · Word (.docx) · RTF · TXT · ZIP**"
+    )
+
+    anon_files = st.file_uploader(
+        "Browse or drop files",
+        type=ACCEPTED_FORMATS,
+        accept_multiple_files=True,
+        label_visibility="collapsed",
+        key="anon_uploader",
+    )
+
+    anon_folder = st.text_input(
+        "Or load all documents from a folder path:",
+        placeholder=r"e.g. C:\Patient Records\John Smith",
+        key="anon_folder_input",
+    ).strip()
+
+    _anon_folder_files = []
+    if anon_folder:
+        _afp = Path(anon_folder)
+        if _afp.is_dir():
+            _anon_folder_files = [
+                f for f in sorted(_afp.iterdir())
+                if f.is_file() and f.suffix.lower().lstrip(".") in _SUPPORTED_EXTS | {"zip"}
+            ]
+            if _anon_folder_files:
+                st.info(
+                    f"📁 **{len(_anon_folder_files)} file(s) found:**  "
+                    + "  ·  ".join(f.name for f in _anon_folder_files[:12])
+                    + ("…" if len(_anon_folder_files) > 12 else "")
+                )
+            else:
+                st.warning("No supported files found in that folder.")
+        else:
+            st.error(f"Folder not found: `{anon_folder}`")
+
+    _anon_any = bool(anon_files) or bool(_anon_folder_files)
+
+    if _anon_any and st.button("🕵️ Anonymise Documents", type="primary", use_container_width=True):
+        all_anon_files = _collect_all_files(anon_files, anon_folder)
+        results = []
+        prog   = st.progress(0.0)
+        status = st.empty()
+
+        for i, uf in enumerate(all_anon_files):
+            status.info(f"Processing {uf.name}…")
+            text, _fmt, _extra = ingest_file(uf)
+            if not text.strip():
+                results.append({"name": uf.name, "text": "", "count": 0, "error": "Could not extract text"})
+                prog.progress((i + 1) / len(all_anon_files))
+                continue
+
+            def _cb(msg, _name=uf.name):
+                status.info(f"**{_name}** — {msg}")
+
+            anon_text, count, _raw = anonymise_document(text, selected_model, status_cb=_cb)
+            results.append({"name": uf.name, "text": anon_text, "count": count, "error": None})
+            prog.progress((i + 1) / len(all_anon_files))
+
+        # Build ZIP of anonymised .txt files
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for r in results:
+                stem = Path(r["name"]).stem
+                zf.writestr(f"{stem}_ANONYMISED.txt", r["text"] or f"[Error: {r['error']}]")
+        zip_buf.seek(0)
+
+        st.session_state["anon_results"]   = results
+        st.session_state["anon_zip_bytes"] = zip_buf.getvalue()
+        prog.progress(1.0)
+        status.empty()
+        st.rerun()
+
+    # ── Results ───────────────────────────────────────────────────────────────
+    if st.session_state.get("anon_results"):
+        results   = st.session_state["anon_results"]
+        zip_bytes = st.session_state.get("anon_zip_bytes")
+
+        st.success(f"✅ {len(results)} document(s) anonymised.")
+        total_redactions = sum(r["count"] for r in results)
+        c1, c2 = st.columns(2)
+        c1.metric("Documents processed", len(results))
+        c2.metric("Identifiers removed", total_redactions)
+
+        st.markdown("---")
+
+        today = datetime.date.today().strftime("%Y%m%d")
+        st.download_button(
+            label="⬇  Download Anonymised Documents (ZIP)",
+            data=zip_bytes,
+            file_name=f"{today}_ANONYMISED_BUNDLE.zip",
+            mime="application/zip",
+            use_container_width=True,
+            type="primary",
+        )
+
+        st.markdown("---")
+        st.subheader("Preview")
+        for r in results:
+            with st.expander(f"📄 {r['name']}  —  {r['count']} identifier(s) removed"):
+                if r["error"]:
+                    st.error(r["error"])
+                else:
+                    st.text_area(
+                        "Anonymised text",
+                        value=r["text"],
+                        height=300,
+                        key=f"anon_preview_{r['name']}",
+                        label_visibility="collapsed",
+                    )
+
+        st.info(
+            "**Reminder:** Review the anonymised output before sharing externally. "
+            "The AI may occasionally miss an identifier or leave an indirect re-identification risk. "
+            "All processing is 100% local — no data leaves this machine."
+        )
 
 
 # =============================================================================
