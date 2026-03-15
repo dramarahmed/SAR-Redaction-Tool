@@ -1070,7 +1070,7 @@ def _anon_chunk(chunk: str, model: str) -> tuple:
                 {"role": "user",   "content": _ANON_PROMPT_TMPL.format(chunk=chunk)},
             ],
             format="json",
-            options={"temperature": 0, "num_predict": 1024},
+            options={"temperature": 0, "num_predict": 4096},  # anonymise returns many more entries than SAR
         )
 
     try:
