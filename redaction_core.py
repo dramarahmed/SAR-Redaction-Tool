@@ -1018,12 +1018,13 @@ def llm_analyse_document(
     # ── Post-processing: remove clinician-only names ──────────────────────────
     # Suppress THIRD_PARTY_IDENTIFIER redactions for registered health
     # professionals appearing in their professional capacity.
-    # Guards:
-    #   (a) Leading "Dr" / "Prof" prefix within 8 chars before the name.
-    #   (b) Trailing ", Consultant [Specialty]" or similar professional title
-    #       within 60 chars after the name — catches un-titled clinicians such
-    #       as "Frank Miller, Consultant Optometrist".
+    # Three guards — any ONE matching all occurrences is sufficient to suppress:
+    #   (a) Name itself starts with "Dr" or "Prof" (e.g. "Dr M. Robertson").
+    #   (b) Leading "Dr"/"Prof" prefix within 8 chars BEFORE each occurrence.
+    #   (c) Trailing ", Consultant [Specialty]" or similar title within 60
+    #       chars AFTER each occurrence (e.g. "Frank Miller, Consultant Optometrist").
     _CLINICIAN_TITLE_RE = re.compile(r'\b(?:Dr|Prof(?:essor)?)\s+', re.IGNORECASE)
+    _CLINICIAN_NAME_START_RE = re.compile(r'^(?:Dr|Prof(?:essor)?)\b', re.IGNORECASE)
     _CLINICIAN_TRAILING_RE = re.compile(
         r',?\s*(?:Consultant|Senior\s+Consultant|Lead\s+Consultant|'
         r'Specialist|Principal|Registrar|Optometrist|Ophthalmologist|'
@@ -1035,9 +1036,13 @@ def llm_analyse_document(
         if item.get("tag") == "THIRD_PARTY_IDENTIFIER":
             name = (item.get("text") or "").strip()
             if " " in name:
+                # Guard (a): name itself begins with Dr/Prof
+                if _CLINICIAN_NAME_START_RE.match(name):
+                    continue
                 occurrences = list(re.finditer(
                     r'(?<!\w)' + re.escape(name) + r'(?!\w)', text, re.IGNORECASE
                 ))
+                # Guards (b) & (c): context around every occurrence
                 if occurrences and all(
                     _CLINICIAN_TITLE_RE.search(text[max(0, m.start() - 8): m.start()])
                     or _CLINICIAN_TRAILING_RE.match(text[m.end(): m.end() + 60])
@@ -1046,6 +1051,29 @@ def llm_analyse_document(
                     continue
         filtered_proposed.append(item)
     all_proposed = filtered_proposed
+
+    # ── Role-title filter ─────────────────────────────────────────────────────
+    # Remove THIRD_PARTY_IDENTIFIER items that look like role/job titles rather
+    # than person names (e.g. "SEN coordinator", "care manager"). The DO NOT FLAG
+    # section of the prompt instructs the LLM not to flag these, but it
+    # occasionally does so — this filter is the code-level safety net.
+    _ROLE_WORDS = {
+        "coordinator", "worker", "officer", "manager", "director", "advisor",
+        "adviser", "therapist", "counsellor", "nurse", "doctor", "consultant",
+        "specialist", "assistant", "support", "teacher", "carer", "warden",
+        "liaison", "lead", "head", "deputy", "supervisor", "practitioner",
+    }
+    all_proposed = [
+        p for p in all_proposed
+        if not (
+            p.get("tag") == "THIRD_PARTY_IDENTIFIER"
+            and any(
+                word.lower().strip(".,;:") in _ROLE_WORDS
+                for word in (p.get("text") or "").split()
+                if word[:1].islower()   # only consider lowercase-starting words
+            )
+        )
+    ]
 
     # ── Institutional-text filter ────────────────────────────────────────────
     # Remove proposed redactions whose text is clearly an organisation/agency
@@ -1082,12 +1110,19 @@ def llm_analyse_document(
     # The prompt instructs the LLM to leave them alone, but as a safety net we
     # detect the guardian name from the record header and strip any proposed
     # redactions that target it.
+    # Bidirectional check:
+    #   • guardian substring of proposed text (e.g. proposed "Mrs Laura Sanders")
+    #   • proposed text is substring of guardian (e.g. proposed "Laura Sanders"
+    #     when guardian is "Mrs Laura Sanders") — the LLM may omit the title
     _guardian_name = _detect_guardian_name(text)
     if _guardian_name:
         _gn_lower = _guardian_name.strip().lower()
         all_proposed = [
             p for p in all_proposed
-            if _gn_lower not in (p.get("text") or "").strip().lower()
+            if not (
+                _gn_lower in (p.get("text") or "").strip().lower()
+                or (p.get("text") or "").strip().lower() in _gn_lower
+            )
         ]
 
     # ── Patient DOB filter ───────────────────────────────────────────────────
