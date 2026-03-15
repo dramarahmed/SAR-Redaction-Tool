@@ -1143,9 +1143,12 @@ def anonymise_document(text: str, model: str, status_cb=None) -> tuple:
     Fully anonymise a document by removing all personal identifiers.
     Returns (anonymised_text, redaction_count, raw_llm_string).
     """
-    CHUNK  = 6000
-    STRIDE = 5500
-    MAX_CH = 8
+    # Smaller chunks keep each LLM call focused on ~3 records rather than 12.
+    # With 6 000-char chunks the model reliably redacted only the first 1-2 records
+    # per chunk then stopped — reducing to 1 500 chars fixes this.
+    CHUNK  = 1500
+    STRIDE = 1300   # 200-char overlap to catch identifiers that straddle a boundary
+    MAX_CH = 20     # enough to cover documents up to ~26 000 chars
 
     # Normalise Unicode lookalikes so LLM-returned strings match the source
     text = _normalise_unicode(text)
@@ -1213,6 +1216,21 @@ def anonymise_document(text: str, model: str, status_cb=None) -> tuple:
     result = re.sub(
         r'\b([A-CEGHJ-PR-TW-Z]{2}[ ]?\d{2}[ ]?\d{2}[ ]?\d{2}[ ]?[A-D])\b',
         '[NI NUMBER]', result, flags=re.IGNORECASE,
+    )
+    if result != _before:
+        count += 1
+
+    # DOB dates — only when explicitly labelled "DOB:" to avoid redacting
+    # clinical dates (admission dates, review dates, etc.)
+    _MONTHS = (
+        r'Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|'
+        r'Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?'
+    )
+    _before = result
+    result = re.sub(
+        rf'(?i)(DOB\s*:?\s*)(\d{{1,2}}[-/ ](?:{_MONTHS})[-/ ]\d{{2,4}}|\d{{1,2}}[/-]\d{{1,2}}[/-]\d{{2,4}})',
+        r'\1[DATE OF BIRTH]',
+        result,
     )
     if result != _before:
         count += 1
