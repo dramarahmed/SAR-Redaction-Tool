@@ -999,61 +999,44 @@ _ANON_SYSTEM = (
 )
 
 _ANON_PROMPT_TMPL = """\
-You are anonymising a clinical document so it can be shared externally (e.g. with a medical
-defence organisation, insurer, or researcher) with ALL patient and person identifiers removed.
+You are anonymising clinical records for external sharing (e.g. MDU, insurer, researcher).
+ALL patient and person identifiers must be removed.
 
-Analyse ONLY the text between the --- markers below.
+CRITICAL: Read the ENTIRE text between the --- markers from top to bottom.
+Process EVERY record, EVERY patient, and EVERY person named anywhere in the text.
+Do NOT stop after the first patient. Do NOT skip any record.
 
-Flag EVERY piece of information that could identify any individual — patient, clinician,
-relative, witness, or any other person — using the tags below.
+For each identifier found, output one JSON entry with:
+  "tag"         — category (see below)
+  "text"        — the EXACT string as it appears in the document
+  "replacement" — the label to substitute
 
-TAGS and replacement labels:
-  PATIENT_NAME      — the patient's own full name, surname, first name, or initials
-                      → replaced with [PATIENT NAME]
-  PATIENT_DOB       — the patient's date of birth
-                      → replaced with [DATE OF BIRTH]
-  PATIENT_NHS       — the patient's NHS number
-                      → replaced with [NHS NUMBER]
-  PATIENT_ADDRESS   — the patient's home address (full or partial: street, town, postcode)
-                      → replaced with [ADDRESS]
-  PATIENT_PHONE     — any phone/mobile number belonging to or primarily associated with the patient
-                      → replaced with [PHONE NUMBER]
-  PATIENT_EMAIL     — any email address belonging to or primarily associated with the patient
-                      → replaced with [EMAIL]
-  PATIENT_ID        — any other patient identifier: NI number, passport, driving licence,
-                      hospital reference, insurance policy number, case file number
-                      → replaced with [ID NUMBER]
-  PERSON_NAME       — the full name, surname, or identifiable initials of any OTHER individual
-                      (clinician, relative, carer, witness, social worker, lawyer, etc.)
-                      → replaced with [NAME]
-  PERSON_CONTACT    — a phone number, email address, or postal address belonging to any
-                      other named individual
-                      → replaced with [CONTACT DETAILS]
+CATEGORIES:
+  PATIENT_NAME    → [PATIENT NAME]   (patient full name, surname, first name, initials)
+  PATIENT_DOB     → [DATE OF BIRTH]  (patient date of birth)
+  PATIENT_NHS     → [NHS NUMBER]     (NHS number)
+  PATIENT_ADDRESS → [ADDRESS]        (home address, street, town — postcodes caught separately)
+  PATIENT_PHONE   → [PHONE NUMBER]
+  PATIENT_EMAIL   → [EMAIL]
+  PATIENT_ID      → [ID NUMBER]      (passport, NI, driving licence, case/policy reference)
+  PERSON_NAME     → [NAME]           (anyone else: clinician, relative, carer, colleague, witness)
+  PERSON_CONTACT  → [CONTACT DETAILS]
 
-FLAG EVERYTHING — do not omit borderline cases. When in doubt, flag it.
+ALWAYS flag: every patient name, DOB, NHS number, address, every other person's full name or
+identifiable initials (e.g. "Dr A. Brown", "J. Smith"), any personal phone/email.
 
-Do NOT preserve:
-  • Patient name, DOB, NHS number under any circumstances
-  • Any person's full name, even clinicians signing letters
-  • Abbreviated names (e.g. "J. Smith", "Dr A. Brown") — flag these too
-  • Postcodes, partial addresses, or any geographic detail that could re-identify
+NEVER flag: organisation names, job titles alone, clinical content, consultation dates,
+generic place names (cities, hospitals without a personal name).
 
-You MAY leave unredacted:
-  • Organisation / institution names (hospital, GP surgery, trust, school name)
-  • Job titles and roles without a personal name attached
-  • Clinical findings, diagnoses, medications, and treatment content (the clinical substance)
-  • Dates of consultations, referrals, or results (not DOB)
-  • Generic place names used in a clinical context (e.g. "admitted to A&E", "London")
-
-Return valid JSON only — no prose, no markdown fences:
+Return ONLY valid JSON — no prose, no markdown:
 {{
   "redactions": [
-    {{"tag": "TAG", "text": "exact text to redact", "replacement": "[LABEL]"}},
-    ...
+    {{"tag": "PATIENT_NAME", "text": "Jane Smith", "replacement": "[PATIENT NAME]"}},
+    {{"tag": "PERSON_NAME",  "text": "Dr A. Brown", "replacement": "[NAME]"}}
   ]
 }}
 
-If nothing needs redacting return: {{"redactions": []}}
+If nothing to redact: {{"redactions": []}}
 
 ---
 {chunk}
@@ -1143,12 +1126,12 @@ def anonymise_document(text: str, model: str, status_cb=None) -> tuple:
     Fully anonymise a document by removing all personal identifiers.
     Returns (anonymised_text, redaction_count, raw_llm_string).
     """
-    # Smaller chunks keep each LLM call focused on ~3 records rather than 12.
-    # With 6 000-char chunks the model reliably redacted only the first 1-2 records
-    # per chunk then stopped — reducing to 1 500 chars fixes this.
-    CHUNK  = 1500
-    STRIDE = 1300   # 200-char overlap to catch identifiers that straddle a boundary
-    MAX_CH = 20     # enough to cover documents up to ~26 000 chars
+    # 3 000-char chunks ≈ 6 records each.  The improved prompt now explicitly
+    # instructs the model to scan the ENTIRE chunk, so we no longer need
+    # 1 500-char micro-chunks.  ~5 LLM calls for a typical 13 000-char document.
+    CHUNK  = 3000
+    STRIDE = 2700   # 300-char overlap so identifiers at boundaries aren't missed
+    MAX_CH = 15     # covers documents up to ~40 000 chars
 
     # Normalise Unicode lookalikes so LLM-returned strings match the source
     text = _normalise_unicode(text)
