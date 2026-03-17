@@ -3683,6 +3683,10 @@ if tool_mode == "sar" and st.session_state.stage == "upload":
             prog.progress(1.0, text="Analysis complete")
             status.empty()
             st.session_state.analyses   = analyses
+            # Clear stale approval/replacement/escalation-decision keys
+            for _k in list(st.session_state.keys()):
+                if _k.startswith(("approve_", "repl_", "esc_dec_")):
+                    del st.session_state[_k]
             st.session_state.stage      = "review"
             st.session_state.play_sound = "chime"
             st.rerun()
@@ -3735,11 +3739,85 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
             "You can still build and download the bundle using the button below."
         )
 
+    # ── Escalation decision options (defined here so progress counter can use them) ──
+    _DEC_OPTS = [
+        "⚠️ Awaiting decision",
+        "🔴 Redact this passage",
+        "✅ Release as-is",
+    ]
+
+    # ── Stable session_state keys: initialise ONCE, then keep as source of truth ──
+    for _si, _sa in enumerate(_analyses):
+        for _ri, _rr in enumerate(_sa["proposed_redactions"]):
+            _ak = f"approve_{_si}_{_ri}"
+            _rk = f"repl_{_si}_{_ri}"
+            if _ak not in st.session_state:
+                st.session_state[_ak] = _rr.get("approved", True)
+            if _rk not in st.session_state:
+                st.session_state[_rk] = _rr.get("replacement", "[REDACTED]")
+            # session_state is the source of truth — sync back to analysis
+            _rr["approved"]    = st.session_state[_ak]
+            _rr["replacement"] = st.session_state[_rk]
+
+    # ── Review progress banner ─────────────────────────────────────────────────
+    _n_approved_total = sum(
+        1
+        for _si, _sa in enumerate(_analyses)
+        for _ri in range(len(_sa["proposed_redactions"]))
+        if st.session_state.get(f"approve_{_si}_{_ri}", True)
+    )
+    _n_esc_decided = sum(
+        1 for _si, _sa in enumerate(_analyses)
+        for _ei in range(len(_sa["escalations"]))
+        if st.session_state.get(f"esc_dec_{_si}_{_ei}", _DEC_OPTS[0]) != _DEC_OPTS[0]
+    )
+    _n_esc_pending = _total_esc - _n_esc_decided
+    _all_ready = _n_esc_pending == 0
+
+    # Progress bar HTML banner
+    _esc_pct  = int(_n_esc_decided / _total_esc * 100) if _total_esc > 0 else 100
+    _bar_col  = "#3cb86a" if _all_ready else "#f0a030"
+    st.markdown(
+        f"""
+        <div style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.10);
+                    border-radius:14px;padding:16px 22px;margin-bottom:16px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <span style="color:rgba(195,218,255,.9);font-weight:600;font-size:1rem">
+              📋 Review Progress
+            </span>
+            <span style="color:rgba(140,180,220,.7);font-size:.85rem">
+              Scroll down to review all suggestions
+            </span>
+          </div>
+          <div style="display:flex;gap:32px;margin-bottom:12px">
+            <div>
+              <div style="color:rgba(140,180,220,.7);font-size:.75rem;text-transform:uppercase;letter-spacing:.5px">Redactions approved</div>
+              <div style="color:#fff;font-size:1.3rem;font-weight:700">{_n_approved_total} <span style="color:rgba(140,180,220,.55);font-size:.9rem">/ {_total_prop}</span></div>
+            </div>
+            <div>
+              <div style="color:rgba(140,180,220,.7);font-size:.75rem;text-transform:uppercase;letter-spacing:.5px">Escalations decided</div>
+              <div style="color:#fff;font-size:1.3rem;font-weight:700">{_n_esc_decided} <span style="color:rgba(140,180,220,.55);font-size:.9rem">/ {_total_esc}</span></div>
+            </div>
+            <div style="margin-left:auto;display:flex;align-items:center">
+              {"<span style='background:rgba(60,184,106,.18);border:1px solid rgba(60,184,106,.45);border-radius:20px;padding:4px 14px;color:rgba(90,220,130,.9);font-weight:600'>✅ Ready to build</span>" if _all_ready else f"<span style='background:rgba(240,160,48,.14);border:1px solid rgba(240,160,48,.4);border-radius:20px;padding:4px 14px;color:rgba(255,200,80,.9);font-weight:600'>⚠️ {_n_esc_pending} escalation{'s' if _n_esc_pending != 1 else ''} pending</span>"}
+            </div>
+          </div>
+          <div style="background:rgba(255,255,255,.08);border-radius:6px;height:14px;overflow:hidden">
+            <div style="width:{_esc_pct}%;height:100%;background:linear-gradient(90deg,{_bar_col},{_bar_col}cc);
+                        border-radius:6px;transition:width .4s ease"></div>
+          </div>
+          <div style="color:rgba(140,180,220,.6);font-size:.73rem;margin-top:5px;text-align:right">
+            {"All escalations resolved — click Apply button below to build the bundle" if _all_ready else f"Scroll down · find sections marked 🔴 · make a decision for each escalation"}
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     st.markdown("### Review Proposed Redactions")
     st.caption(
         "Tick **✓** to approve a redaction · untick to keep the text as-is.  "
-        "You can edit the Replacement Label column.  "
-        "Escalations require a manual decision before the document is released."
+        "Escalations (🔴) require a manual decision before the document is released."
     )
     st.divider()
 
@@ -3852,11 +3930,6 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
                     "LEGAL_PRIVILEGE":             "🟠",
                     "DPA_SCHEDULE3_EXEMPTION":     "🟠",
                 }
-                _DEC_OPTS = [
-                    "⚠️ Awaiting decision",
-                    "🔴 Redact this passage",
-                    "✅ Release as-is",
-                ]
                 _n_esc = len(analysis["escalations"])
 
                 for ei, esc in enumerate(analysis["escalations"]):
@@ -3963,18 +4036,12 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
                                     "context":     context,
                                     "approved":    True,
                                 })
-                                if f"editor_{i}" in st.session_state:
-                                    del st.session_state[f"editor_{i}"]
                         elif decision == _DEC_OPTS[2]:  # Release
                             # Remove from proposed_redactions if previously added
-                            before = len(analysis["proposed_redactions"])
                             analysis["proposed_redactions"] = [
                                 r for r in analysis["proposed_redactions"]
                                 if not (r.get("text") == flagged and r.get("tag") == tag)
                             ]
-                            if len(analysis["proposed_redactions"]) != before:
-                                if f"editor_{i}" in st.session_state:
-                                    del st.session_state[f"editor_{i}"]
 
                 st.divider()
 
@@ -3984,69 +4051,74 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
 
                 ba1, ba2, _ = st.columns([1, 1, 5])
                 if ba1.button("Approve All", key=f"app_all_{i}"):
-                    for r in analysis["proposed_redactions"]:
+                    for j, r in enumerate(analysis["proposed_redactions"]):
                         r["approved"] = True
-                    if f"editor_{i}" in st.session_state:
-                        del st.session_state[f"editor_{i}"]
+                        st.session_state[f"approve_{i}_{j}"] = True
                     st.rerun()
                 if ba2.button("Reject All", key=f"rej_all_{i}"):
-                    for r in analysis["proposed_redactions"]:
+                    for j, r in enumerate(analysis["proposed_redactions"]):
                         r["approved"] = False
-                    if f"editor_{i}" in st.session_state:
-                        del st.session_state[f"editor_{i}"]
+                        st.session_state[f"approve_{i}_{j}"] = False
                     st.rerun()
 
-                if PANDAS_AVAILABLE:
-                    df_rows = []
-                    for r in analysis["proposed_redactions"]:
-                        tag_info = REDACTION_TAGS.get(r.get("tag", ""), {})
-                        df_rows.append({
-                            "Approve":     r.get("approved", True),
-                            "Text":        r.get("text", ""),
-                            "Category":    tag_info.get("label", r.get("tag", "")),
-                            "Reason":      r.get("reason", ""),
-                            "Context":     (r.get("context") or "")[:150],
-                            "Replacement": r.get("replacement", "[REDACTED]"),
-                        })
-                    df = pd.DataFrame(df_rows)
+                # ── Individual rows — stable session_state keys prevent state loss ──
+                _hdr1, _hdr2, _hdr3, _hdr4 = st.columns([1, 4, 2, 2])
+                _hdr1.markdown("<span style='color:rgba(140,180,220,.6);font-size:.78rem'>APPROVE</span>", unsafe_allow_html=True)
+                _hdr2.markdown("<span style='color:rgba(140,180,220,.6);font-size:.78rem'>TEXT TO REDACT  ·  CATEGORY  ·  REASON</span>", unsafe_allow_html=True)
+                _hdr3.markdown("<span style='color:rgba(140,180,220,.6);font-size:.78rem'>REPLACEMENT LABEL</span>", unsafe_allow_html=True)
+                _hdr4.markdown("<span style='color:rgba(140,180,220,.6);font-size:.78rem'>CONTEXT</span>", unsafe_allow_html=True)
+                st.markdown("<hr style='margin:4px 0 8px;border-color:rgba(255,255,255,.08)'>", unsafe_allow_html=True)
 
-                    edited = st.data_editor(
-                        df,
-                        use_container_width=True,
-                        hide_index=True,
-                        column_config={
-                            "Approve":     st.column_config.CheckboxColumn("✓", width=60),
-                            "Text":        st.column_config.TextColumn("Text to Redact",      width="medium"),
-                            "Category":    st.column_config.TextColumn("Category",            width="medium"),
-                            "Reason":      st.column_config.TextColumn("Reason",              width="medium"),
-                            "Context":     st.column_config.TextColumn("Surrounding Context", width="large"),
-                            "Replacement": st.column_config.TextColumn("Replacement Label",   width="medium"),
-                        },
-                        disabled=["Text", "Category", "Reason", "Context"],
-                        key=f"editor_{i}",
+                for j, r in enumerate(analysis["proposed_redactions"]):
+                    _ak      = f"approve_{i}_{j}"
+                    _rk      = f"repl_{i}_{j}"
+                    tag_info = REDACTION_TAGS.get(r.get("tag", ""), {})
+                    _label   = tag_info.get("label", r.get("tag", ""))
+                    _text    = r.get("text", "")
+                    _reason  = (r.get("reason") or "")[:140]
+                    _ctx     = (r.get("context") or "")[:120]
+
+                    c_chk, c_txt, c_repl, c_ctx = st.columns([1, 4, 2, 2])
+                    with c_chk:
+                        approved = st.checkbox(
+                            "✓",
+                            key=_ak,
+                            help="Tick to redact · untick to keep",
+                            label_visibility="collapsed",
+                        )
+                        r["approved"] = approved
+                        st.caption("✓ Redact" if approved else "✗ Keep")
+                    with c_txt:
+                        _txt_style = (
+                            "background:rgba(220,50,50,.15);border-radius:4px;"
+                            "padding:2px 6px;color:rgba(255,160,160,.92);font-family:monospace;font-size:.85rem"
+                            if approved else
+                            "background:rgba(255,255,255,.06);border-radius:4px;"
+                            "padding:2px 6px;color:rgba(180,200,220,.65);font-family:monospace;font-size:.85rem;text-decoration:none"
+                        )
+                        st.markdown(
+                            f"<span style='{_txt_style}'>{_text}</span>"
+                            f"<br><span style='color:rgba(120,160,210,.7);font-size:.78rem'>"
+                            f"<b>{_label}</b>"
+                            + (f" · {_reason}" if _reason else "")
+                            + "</span>",
+                            unsafe_allow_html=True,
+                        )
+                    with c_repl:
+                        new_repl = st.text_input(
+                            "Replacement",
+                            key=_rk,
+                            label_visibility="collapsed",
+                            placeholder="[REDACTED]",
+                        )
+                        r["replacement"] = new_repl.strip() if new_repl.strip() else "[REDACTED]"
+                    with c_ctx:
+                        if _ctx:
+                            st.caption(_ctx)
+                    st.markdown(
+                        "<hr style='margin:2px 0 6px;border-color:rgba(255,255,255,.05)'>",
+                        unsafe_allow_html=True,
                     )
-                    # Write approvals and replacement text back to session state
-                    for j, row in edited.iterrows():
-                        if j < len(analysis["proposed_redactions"]):
-                            analysis["proposed_redactions"][j]["approved"]    = bool(row["Approve"])
-                            analysis["proposed_redactions"][j]["replacement"] = str(row["Replacement"])
-
-                else:
-                    # Fallback without pandas
-                    for j, r in enumerate(analysis["proposed_redactions"]):
-                        tag_info = REDACTION_TAGS.get(r.get("tag", ""), {})
-                        c1, c2 = st.columns([1, 5])
-                        with c1:
-                            r["approved"] = st.checkbox(
-                                "Approve", value=r.get("approved", True),
-                                key=f"cb_{i}_{j}",
-                            )
-                        with c2:
-                            st.markdown(
-                                f"**{tag_info.get('label', r.get('tag', ''))}** "
-                                f"— `{r.get('text', '')}`  \n"
-                                f"*{r.get('reason', '')}*"
-                            )
 
             # ── Context preview panel ─────────────────────────────────────────
             _all_items = analysis["proposed_redactions"] + [
