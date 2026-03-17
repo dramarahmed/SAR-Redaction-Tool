@@ -598,11 +598,23 @@ li[role="option"]:hover {
 }
 
 
-/* ═══ Alert boxes ═══ */
+/* ═══ Alert boxes (info / success / warning / error) ═══ */
 [data-testid="stAlert"] {
     background: rgba(255,255,255,.04) !important;
     backdrop-filter: blur(10px) !important;
     border-radius: 10px !important;
+}
+/* Ensure all text inside alerts is readable on the dark background */
+[data-testid="stAlert"] p,
+[data-testid="stAlert"] li,
+[data-testid="stAlert"] span,
+[data-testid="stAlert"] div,
+[data-testid="stAlert"] a,
+[data-testid="stAlertContentBlock"] p,
+[data-testid="stAlertContentBlock"] li,
+[data-testid="stAlertContentBlock"] span {
+    color: rgba(210,232,255,.92) !important;
+    -webkit-text-fill-color: rgba(210,232,255,.92) !important;
 }
 
 /* ═══ Progress bar ═══ */
@@ -641,12 +653,6 @@ li[role="option"]:hover {
 
 /* ═══ Divider ═══ */
 hr { border-color: rgba(255,255,255,.08) !important; }
-
-/* ═══ Scrollbar ═══ */
-::-webkit-scrollbar { width: 5px; height: 5px; }
-::-webkit-scrollbar-track { background: rgba(255,255,255,.02); }
-::-webkit-scrollbar-thumb { background: rgba(0,94,184,.38); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(0,94,184,.6); }
 
 /* ═══ Toggle ═══ */
 .stToggle > label > div { background: rgba(255,255,255,.1) !important; }
@@ -687,6 +693,54 @@ hr { border-color: rgba(255,255,255,.08) !important; }
     border-radius: 10px; padding: 10px 14px; margin: 10px 0;
     font-size: .76rem; color: rgba(255,195,100,.82); line-height: 1.55;
 }
+
+/* ═══ File uploader — uploaded file list ═══ */
+[data-testid="stFileUploader"] *,
+[data-testid="stFileUploaderDropzone"] *,
+[data-testid="stFileUploaderFileList"] *,
+[data-testid="stFileUploaderFile"] * {
+    color: rgba(195,218,255,.88) !important;
+    -webkit-text-fill-color: rgba(195,218,255,.88) !important;
+}
+[data-testid="stFileUploaderDropzone"] {
+    background: rgba(6,18,48,0.55) !important;
+    border: 1px dashed rgba(0,94,184,.5) !important;
+    border-radius: 10px !important;
+}
+
+/* ═══ Radio buttons ═══ */
+.stRadio label,
+.stRadio span,
+.stRadio > div > label span,
+[data-testid="stRadio"] label,
+[data-testid="stRadio"] span {
+    color: rgba(195,218,255,.88) !important;
+    -webkit-text-fill-color: rgba(195,218,255,.88) !important;
+}
+
+/* ═══ Checkboxes ═══ */
+.stCheckbox label span,
+[data-testid="stCheckbox"] span {
+    color: rgba(195,218,255,.88) !important;
+    -webkit-text-fill-color: rgba(195,218,255,.88) !important;
+}
+
+/* ═══ Scrollbar (global) — updated to be clearly visible ═══ */
+::-webkit-scrollbar { width: 14px; height: 14px; }
+::-webkit-scrollbar-track { background: rgba(255,255,255,.04); border-radius: 7px; }
+::-webkit-scrollbar-thumb {
+    background: rgba(100,160,255,.45);
+    border-radius: 7px;
+    border: 3px solid transparent;
+    background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(100,160,255,.72);
+    border-radius: 7px;
+    border: 3px solid transparent;
+    background-clip: padding-box;
+}
+* { scrollbar-width: auto; scrollbar-color: rgba(100,160,255,.45) rgba(255,255,255,.04); }
 </style>""", unsafe_allow_html=True)
 
 
@@ -3680,35 +3734,6 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
             "• Documents genuinely contain no third-party or sensitive content  \n\n"
             "You can still build and download the bundle using the button below."
         )
-
-    # ── Visible scrollbar styling ─────────────────────────────────────────────
-    st.markdown(
-        """
-        <style>
-        /* Make the page scrollbar wide and clearly visible */
-        ::-webkit-scrollbar { width: 16px; }
-        ::-webkit-scrollbar-track {
-            background: rgba(255,255,255,0.07);
-            border-radius: 8px;
-        }
-        ::-webkit-scrollbar-thumb {
-            background: rgba(255,255,255,0.35);
-            border-radius: 8px;
-            border: 3px solid transparent;
-            background-clip: padding-box;
-        }
-        ::-webkit-scrollbar-thumb:hover {
-            background: rgba(255,255,255,0.6);
-            border-radius: 8px;
-            border: 3px solid transparent;
-            background-clip: padding-box;
-        }
-        /* Firefox */
-        * { scrollbar-width: auto; scrollbar-color: rgba(255,255,255,0.35) rgba(255,255,255,0.07); }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
 
     st.markdown("### Review Proposed Redactions")
     st.caption(
