@@ -432,34 +432,53 @@ p, li { color: #2c3e5a !important; }
 .stCaption, [data-testid="stCaptionContainer"] p { color: #5a7090 !important; }
 
 /* ═══ Buttons — NHS blue ═══ */
-.stButton > button {
+/* Must set -webkit-text-fill-color as well as color; Streamlit injects
+   -webkit-text-fill-color from textColor in config.toml which otherwise
+   wins over `color` in Chrome/WebKit regardless of specificity.          */
+.stButton > button,
+.stButton > button * {
     background: #ffffff !important;
     border: 1.5px solid #005EB8 !important;
     color: #005EB8 !important;
+    -webkit-text-fill-color: #005EB8 !important;
     border-radius: 8px !important;
     font-weight: 600 !important;
     transition: all .18s ease !important;
     box-shadow: 0 1px 4px rgba(0,94,184,.10) !important;
 }
-.stButton > button:hover {
+.stButton > button:hover,
+.stButton > button:hover * {
     background: #005EB8 !important;
     color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
     box-shadow: 0 3px 12px rgba(0,94,184,.22) !important;
 }
-.stButton > button[kind="primary"] {
+.stButton > button[kind="primary"],
+.stButton > button[kind="primary"] * {
     background: #005EB8 !important;
     color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
     border-color: #005EB8 !important;
 }
-.stButton > button[kind="primary"]:hover { background: #004a9a !important; }
-.stDownloadButton > button {
+.stButton > button[kind="primary"]:hover,
+.stButton > button[kind="primary"]:hover * {
+    background: #004a9a !important;
+    -webkit-text-fill-color: #ffffff !important;
+}
+.stDownloadButton > button,
+.stDownloadButton > button * {
     background: #1a7a36 !important;
     color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
     border-color: #1a7a36 !important;
     border-radius: 8px !important;
     font-weight: 600 !important;
 }
-.stDownloadButton > button:hover { background: #155f2b !important; }
+.stDownloadButton > button:hover,
+.stDownloadButton > button:hover * {
+    background: #155f2b !important;
+    -webkit-text-fill-color: #ffffff !important;
+}
 
 /* ═══ Metrics ═══ */
 [data-testid="stMetric"] {
