@@ -3101,12 +3101,13 @@ def build_filled_form_pdf(
 # =============================================================================
 
 for _k, _v in [
-    ("stage",        "upload"),
-    ("analyses",     []),
-    ("bundle_bytes", None),
-    ("bundle_fname", "SAR_REDACTED_BUNDLE.pdf"),
-    ("proc_summary", []),
-    ("play_sound",   None),
+    ("stage",         "upload"),
+    ("analyses",      []),
+    ("bundle_bytes",  None),
+    ("bundle_fname",  "SAR_REDACTED_BUNDLE.pdf"),
+    ("proc_summary",  []),
+    ("play_sound",    None),
+    ("sar_input_ver", 0),   # incremented by _reset() to wipe sidebar form fields
     # ── Form filler ──────────────────────────────────────────────────────────
     ("tool_mode",         "sar"),        # "sar" | "form_filler" | "anon"
     ("ff_stage",          "ff_upload"),  # "ff_upload" | "ff_review" | "ff_export"
@@ -3124,7 +3125,7 @@ for _k, _v in [
 
 
 def _reset():
-    """Reset SAR redaction session state."""
+    """Reset SAR redaction session state and wipe all sidebar form fields."""
     keys_to_clear = [
         k for k in list(st.session_state.keys())
         if k in ("stage", "analyses", "bundle_bytes", "bundle_fname", "proc_summary")
@@ -3133,9 +3134,16 @@ def _reset():
         or k.startswith("esc_add_")
         or k.startswith("app_all_")
         or k.startswith("rej_all_")
+        or k.startswith("approve_")
+        or k.startswith("repl_")
+        or k.startswith("esc_dec_")
+        or k.startswith("page_excl_")
     ]
     for k in keys_to_clear:
         del st.session_state[k]
+    # Increment version counter → all sidebar inputs with key=f"..._{sar_input_ver}"
+    # become new widgets and default back to empty/None on the next rerun.
+    st.session_state.sar_input_ver = st.session_state.get("sar_input_ver", 0) + 1
 
 
 def _reset_ff():
@@ -3261,10 +3269,11 @@ with st.sidebar:
 
         st.divider()
         st.subheader("SAR Details")
-        sar_ref       = st.text_input("SAR reference / case ID",  placeholder="e.g. SAR-2024-001")
-        patient_name  = st.text_input("Patient full name",         placeholder="e.g. John Smith")
-        operator_name = st.text_input("Operator name",             placeholder="Your name / initials")
-        sar_date_input = st.date_input("SAR received date", value=None, format="DD/MM/YYYY")
+        _sv = st.session_state.sar_input_ver   # version suffix — incremented by _reset()
+        sar_ref       = st.text_input("SAR reference / case ID",  placeholder="e.g. SAR-2024-001", key=f"sar_ref_{_sv}")
+        patient_name  = st.text_input("Patient full name",         placeholder="e.g. John Smith",   key=f"patient_name_{_sv}")
+        operator_name = st.text_input("Operator name",             placeholder="Your name / initials", key=f"operator_name_{_sv}")
+        sar_date_input = st.date_input("SAR received date", value=None, format="DD/MM/YYYY", key=f"sar_date_{_sv}")
         if sar_date_input:
             _deadline  = sar_date_input + datetime.timedelta(days=30)
             _days_left = (_deadline - datetime.date.today()).days
@@ -3284,6 +3293,7 @@ with st.sidebar:
                 "Extra terms to always redact",
                 placeholder="e.g. Jane Smith\nAcme Care Ltd, Reference XYZ-99",
                 height=90,
+                key=f"extra_terms_{_sv}",
                 help="Names, organisations or phrases that should always be redacted in this session. "
                      "Separate with commas or new lines.",
             )
@@ -3294,6 +3304,7 @@ with st.sidebar:
                     "Treat all street addresses as third-party identifiers."
                 ),
                 height=110,
+                key=f"custom_inst_{_sv}",
                 help="Free-text instructions appended to the LLM redaction prompt for every document "
                      "in this session. Use this to fine-tune what the model flags.",
             )
@@ -3439,11 +3450,13 @@ if tool_mode == "sar" and st.session_state.stage == "upload":
         type=ACCEPTED_FORMATS,
         accept_multiple_files=True,
         label_visibility="collapsed",
+        key=f"sar_uploader_{st.session_state.sar_input_ver}",
     )
 
     folder_path_input = st.text_input(
         "Or load all documents from a folder path:",
         placeholder=r"e.g. C:\Patient Records\John Smith",
+        key=f"folder_path_{st.session_state.sar_input_ver}",
         help="Paste the full path to a folder on this computer. "
              "All supported files (PDF, DOCX, TIFF, RTF, TXT, ZIP) inside it will be included.",
     ).strip()
