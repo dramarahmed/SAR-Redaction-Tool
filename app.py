@@ -11,6 +11,7 @@ import ollama
 import fitz  # PyMuPDF
 import base64
 import datetime
+import time
 import io
 import os
 import re
@@ -52,6 +53,28 @@ try:
     TESSERACT_AVAILABLE = True
 except Exception:
     TESSERACT_AVAILABLE = False
+
+
+# =============================================================================
+# Timing helpers
+# =============================================================================
+
+def _fmt_elapsed(seconds: float) -> str:
+    """Format a number of seconds as '1m 23s' or '45s'."""
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    return f"{s // 60}m {s % 60:02d}s"
+
+
+def _timing_suffix(start: float, done: int, total: int) -> str:
+    """Return '  |  elapsed 1m 23s  ·  ~2m 10s remaining' string."""
+    elapsed = time.time() - start
+    parts = [f"elapsed {_fmt_elapsed(elapsed)}"]
+    if done > 0 and done < total:
+        remaining = elapsed / done * (total - done)
+        parts.append(f"~{_fmt_elapsed(remaining)} remaining")
+    return "  |  " + "  ·  ".join(parts)
 
 
 # =============================================================================
@@ -1240,10 +1263,14 @@ def anonymise_document(text: str, model: str, status_cb=None) -> tuple:
     all_redactions = []
     all_raw        = []
     llm_failures   = 0
+    _p1_start      = time.time()
 
     for idx, chunk in enumerate(chunks, 1):
         if status_cb:
-            status_cb(f"🔍 Pass 1 — chunk {idx}/{len(chunks)}…")
+            status_cb(
+                f"🔍 Pass 1 — chunk {idx}/{len(chunks)}"
+                + _timing_suffix(_p1_start, idx - 1, len(chunks))
+            )
         redactions, raw = _anon_chunk(chunk, model)
         all_raw.append(raw)
         all_redactions.extend(redactions)
@@ -1314,13 +1341,14 @@ def anonymise_document(text: str, model: str, status_cb=None) -> tuple:
         count += 1
 
     # ── Pass 2: verification — scan redacted text for anything still missed ──
-    if status_cb:
-        status_cb("🔎 Pass 2 — verifying for missed identifiers…")
-
     verify_chunks = _smart_chunks(result, max_chars=2500)
+    _p2_start = time.time()
     for idx, vchunk in enumerate(verify_chunks, 1):
         if status_cb:
-            status_cb(f"🔎 Pass 2 — verifying chunk {idx}/{len(verify_chunks)}…")
+            status_cb(
+                f"🔎 Pass 2 — verifying chunk {idx}/{len(verify_chunks)}"
+                + _timing_suffix(_p2_start, idx - 1, len(verify_chunks))
+            )
 
         def _vcall(c=vchunk):
             return ollama.chat(
@@ -1459,11 +1487,13 @@ def llm_analyse_document(
     all_proposed, all_escalations, all_raw = [], [], []
     parse_ok = True
 
+    _sar_analyse_start = time.time()
     for idx, chunk in enumerate(chunks, 1):
         if status_cb:
             status_cb(
                 f"🤖 Analysing chunk {idx}/{len(chunks)} "
-                f"(~{len(chunk):,} chars, up to {_CHUNK_TIMEOUT}s each)…"
+                f"(~{len(chunk):,} chars, up to {_CHUNK_TIMEOUT}s each)"
+                + _timing_suffix(_sar_analyse_start, idx - 1, len(chunks))
             )
         result, raw = _analyse_chunk(chunk, model, patient_line, extra_str)
         all_raw.append(raw)
@@ -1586,7 +1616,18 @@ def llm_analyse_document(
     _CLINICIAN_TRAILING_RE = re.compile(
         r',?\s*(?:Consultant|Senior\s+Consultant|Lead\s+Consultant|'
         r'Specialist|Principal|Registrar|Optometrist|Ophthalmologist|'
-        r'Dentist|Radiographer)\b',
+        r'Dentist|Radiographer|Pharmacist|Physiotherapist|Occupational\s+Therapist|'
+        r'Speech\s+(?:and\s+Language\s+)?Therapist|Psychologist|Psychiatrist|'
+        r'Podiatrist|Dietitian|Dietician|Paramedic|Midwife|'
+        r'Community\s+Nurse|District\s+Nurse|Practice\s+Nurse|'
+        r'Nurse\s+Practitioner|Advanced\s+(?:Nurse\s+)?Practitioner|'
+        r'Clinical\s+Nurse\s+Specialist|'
+        r'GP|General\s+Practitioner|Surgeon|Physician|Paediatrician|'
+        r'Cardiologist|Neurologist|Oncologist|Dermatologist|Radiologist|'
+        r'Gynaecologist|Obstetrician|Urologist|Gastroenterologist|'
+        r'Anaesthetist|Endocrinologist|Rheumatologist|Haematologist|'
+        r'(?:MB|BM|BCh|MBBS|MBChB|MRCGP|MRCP|FRCP|FRCS|FRCOphth|'
+        r'FRCR|FRCPsych|MRCPsych|DCH|DRCOG|DFFP|DPH|PhD|MD))\b',
         re.IGNORECASE,
     )
     filtered_proposed = []
@@ -1679,9 +1720,12 @@ def llm_analyse_document(
         ]
 
     # ── Patient DOB filter ───────────────────────────────────────────────────
-    # The LLM occasionally misidentifies the patient's own DOB as a third-party
-    # date (e.g. "neighbour's DOB", "mother's DOB"). Remove any proposed redaction
-    # that exactly matches the DOB from the record header.
+    # The patient's own DOB is their data, not a third-party identifier —
+    # it must never appear in the redaction list.
+    # (a) Remove any item explicitly tagged PATIENT_DOB.
+    # (b) Remove any item whose text exactly matches the DOB extracted from the
+    #     record header (catches cases where the LLM mislabels it).
+    all_proposed = [p for p in all_proposed if p.get("tag") != "PATIENT_DOB"]
     _patient_dob = _detect_patient_dob(text)
     if _patient_dob:
         all_proposed = [
@@ -3430,11 +3474,15 @@ if tool_mode == "sar" and st.session_state.stage == "upload":
 
             analyses          = []
             _model_warm_shown = False   # track whether we've warned about model warm-up
+            _sar_outer_start  = time.time()
 
             for i, ufile in enumerate(all_files):
                 prog.progress(
                     i / len(all_files),
-                    text=f"Processing {ufile.name} ({i + 1}/{len(all_files)})…",
+                    text=(
+                        f"File {i + 1}/{len(all_files)}: {ufile.name}"
+                        + _timing_suffix(_sar_outer_start, i, len(all_files))
+                    ),
                 )
 
                 # Surface ZIP extraction errors
@@ -3632,6 +3680,35 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
             "• Documents genuinely contain no third-party or sensitive content  \n\n"
             "You can still build and download the bundle using the button below."
         )
+
+    # ── Visible scrollbar styling ─────────────────────────────────────────────
+    st.markdown(
+        """
+        <style>
+        /* Make the page scrollbar wide and clearly visible */
+        ::-webkit-scrollbar { width: 16px; }
+        ::-webkit-scrollbar-track {
+            background: rgba(255,255,255,0.07);
+            border-radius: 8px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255,255,255,0.35);
+            border-radius: 8px;
+            border: 3px solid transparent;
+            background-clip: padding-box;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255,255,255,0.6);
+            border-radius: 8px;
+            border: 3px solid transparent;
+            background-clip: padding-box;
+        }
+        /* Firefox */
+        * { scrollbar-width: auto; scrollbar-color: rgba(255,255,255,0.35) rgba(255,255,255,0.07); }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     st.markdown("### Review Proposed Redactions")
     st.caption(
@@ -3833,21 +3910,21 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
                         st.markdown("---")
 
                         # ── Decision control ─────────────────────────────────
-                        dcol1, dcol2 = st.columns([2, 3])
-                        with dcol1:
-                            st.markdown("**Your decision:**")
-                        with dcol2:
-                            decision = st.selectbox(
-                                "Decision",
-                                options=_DEC_OPTS,
-                                key=dec_key,
-                                label_visibility="collapsed",
-                                help=(
-                                    "• Awaiting decision — no action yet  \n"
-                                    "• Redact this passage — adds to the redaction list below  \n"
-                                    "• Release as-is — text will appear in the final bundle"
-                                ),
-                            )
+                        decision = st.radio(
+                            "**Your decision:**",
+                            options=_DEC_OPTS,
+                            key=dec_key,
+                            horizontal=True,
+                            help=(
+                                "• Awaiting decision — no action yet  \n"
+                                "• Redact this passage — adds to the redaction list below  \n"
+                                "• Release as-is — text will appear in the final bundle"
+                            ),
+                        )
+                        if decision == _DEC_OPTS[1]:
+                            st.error("This passage will be **redacted** in the final bundle.")
+                        elif decision == _DEC_OPTS[2]:
+                            st.success("This passage will be **released** as-is.")
 
                         # Apply decision
                         _existing_texts = {r["text"] for r in analysis["proposed_redactions"]}
@@ -4012,12 +4089,16 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
         status = st.empty()
         proc   = []
 
+        _apply_start = time.time()
         for i, analysis in enumerate(_analyses):
             if analysis.get("error") or analysis.get("doc") is None:
                 continue
             prog.progress(
                 i / max(len(_analyses), 1),
-                text=f"Redacting {analysis['filename']}…",
+                text=(
+                    f"Redacting {analysis['filename']} ({i + 1}/{len(_analyses)})"
+                    + _timing_suffix(_apply_start, i, len(_analyses))
+                ),
             )
             status.markdown(f"✏️ Applying redactions to **{analysis['filename']}**…")
             approved = [r for r in analysis["proposed_redactions"] if r.get("approved", True)]
@@ -4186,8 +4267,12 @@ elif tool_mode == "anon":
         prog   = st.progress(0.0)
         status = st.empty()
 
+        _anon_outer_start = time.time()
         for i, uf in enumerate(all_anon_files):
-            status.info(f"Processing {uf.name}…")
+            status.info(
+                f"Processing file {i + 1}/{len(all_anon_files)}: {uf.name}"
+                + _timing_suffix(_anon_outer_start, i, len(all_anon_files))
+            )
             _doc, text, _err, _ocr = ingest_file(uf)
             if not text.strip():
                 results.append({"name": uf.name, "text": "", "count": 0, "error": _err or "Could not extract text"})
@@ -4328,10 +4413,14 @@ elif tool_mode == "form_filler" and st.session_state.ff_stage == "ff_upload":
             epr_text_parts = []
             epr_docs       = []
 
+            _epr_start = time.time()
             for fi, epr_file in enumerate(all_epr_files):
                 prog.progress(
                     0.05 + 0.3 * fi / max(len(all_epr_files), 1),
-                    text=f"Reading {epr_file.name}…",
+                    text=(
+                        f"Reading {epr_file.name} ({fi + 1}/{len(all_epr_files)})"
+                        + _timing_suffix(_epr_start, fi, len(all_epr_files))
+                    ),
                 )
                 if getattr(epr_file, "_zip_error", None):
                     continue
