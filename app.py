@@ -3745,36 +3745,132 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
         "✅ Release as-is",
     ]
 
-    # ── Stable session_state keys: initialise ONCE, then keep as source of truth ──
+    _ESC_TAG_DOT = {
+        "CLINICIAN_CONTEXT_AMBIGUOUS": "🟡",
+        "SAFEGUARDING_RISK":           "🔴",
+        "DOMESTIC_ABUSE_CONTEXT":      "🔴",
+        "CHILD_PROTECTION":            "🔴",
+        "SERIOUS_HARM_RISK":           "🔴",
+        "SENSITIVE_CLINICAL_OPINION":  "🟠",
+        "LEGAL_PRIVILEGE":             "🟠",
+        "DPA_SCHEDULE3_EXEMPTION":     "🟠",
+    }
+
+    # ── Phase 1 — Build canonical maps (runs every rerender, before any UI) ──
+
+    _unique_items_ordered = []        # [(text_lower, canon_si, canon_ri, rr_dict)]
+    _tl_to_canonical = {}             # text_lower → (canon_si, canon_ri)
+    _tl_to_docs = {}                  # text_lower → [filename, ...]
+
     for _si, _sa in enumerate(_analyses):
         for _ri, _rr in enumerate(_sa["proposed_redactions"]):
-            _ak = f"approve_{_si}_{_ri}"
-            _rk = f"repl_{_si}_{_ri}"
-            if _ak not in st.session_state:
-                st.session_state[_ak] = _rr.get("approved", True)
-            if _rk not in st.session_state:
-                st.session_state[_rk] = _rr.get("replacement", "[REDACTED]")
-            # session_state is the source of truth — sync back to analysis
-            _rr["approved"]    = st.session_state[_ak]
-            _rr["replacement"] = st.session_state[_rk]
+            _tl = (_rr.get("text") or "").strip().lower()
+            if not _tl:
+                continue
+            if _tl not in _tl_to_canonical:
+                _unique_items_ordered.append((_tl, _si, _ri, _rr))
+                _tl_to_canonical[_tl] = (_si, _ri)
+                _tl_to_docs[_tl] = [_sa["filename"]]
+            elif _sa["filename"] not in _tl_to_docs[_tl]:
+                _tl_to_docs[_tl].append(_sa["filename"])
 
-    # ── Review progress banner ─────────────────────────────────────────────────
-    _n_approved_total = sum(
-        1
-        for _si, _sa in enumerate(_analyses)
-        for _ri in range(len(_sa["proposed_redactions"]))
-        if st.session_state.get(f"approve_{_si}_{_ri}", True)
-    )
-    _n_esc_decided = sum(
-        1 for _si, _sa in enumerate(_analyses)
-        for _ei in range(len(_sa["escalations"]))
-        if st.session_state.get(f"esc_dec_{_si}_{_ei}", _DEC_OPTS[0]) != _DEC_OPTS[0]
-    )
-    _n_esc_pending = _total_esc - _n_esc_decided
-    _all_ready = _n_esc_pending == 0
+    # Init session_state for CANONICAL instances only
+    for _tl, _csi, _cri, _crr in _unique_items_ordered:
+        _ak = f"approve_{_csi}_{_cri}"
+        _rk = f"repl_{_csi}_{_cri}"
+        if _ak not in st.session_state:
+            st.session_state[_ak] = _crr.get("approved", True)
+        if _rk not in st.session_state:
+            st.session_state[_rk] = _crr.get("replacement", "[REDACTED]") or "[REDACTED]"
+
+    # Escalations canonical map
+    _esc_unique_ordered = []       # [(etl, canon_si, canon_ei, esc_dict, [filenames])]
+    _etl_to_canonical = {}
+    _etl_to_docs = {}
+    for _si, _sa in enumerate(_analyses):
+        for _ei, _esc in enumerate(_sa["escalations"]):
+            _etl = (_esc.get("text") or "").strip().lower()
+            if not _etl:
+                continue
+            if _etl not in _etl_to_canonical:
+                _esc_unique_ordered.append((_etl, _si, _ei, _esc, [_sa["filename"]]))
+                _etl_to_canonical[_etl] = (_si, _ei)
+                _etl_to_docs[_etl] = [_sa["filename"]]
+            elif _sa["filename"] not in _etl_to_docs[_etl]:
+                _etl_to_docs[_etl].append(_sa["filename"])
+
+    for _etl, _esi, _eei, _esc, _edocs in _esc_unique_ordered:
+        _dk = f"esc_dec_{_esi}_{_eei}"
+        if _dk not in st.session_state:
+            st.session_state[_dk] = _DEC_OPTS[0]
+
+    # ── Phase 2 — Propagate decisions ──────────────────────────────────────────
+
+    def _propagate_decisions():
+        # Sync canonical session_state → every rr in _analyses
+        for _sa in _analyses:
+            for _rr in _sa["proposed_redactions"]:
+                _tl = (_rr.get("text") or "").strip().lower()
+                _canon = _tl_to_canonical.get(_tl)
+                if _canon:
+                    _csi, _cri = _canon
+                    _rr["approved"]    = st.session_state.get(f"approve_{_csi}_{_cri}", True)
+                    _rr["replacement"] = st.session_state.get(f"repl_{_csi}_{_cri}", "[REDACTED]") or "[REDACTED]"
+
+        # Apply escalation decisions → proposed_redactions for every doc
+        for _si, _sa in enumerate(_analyses):
+            for _esc in _sa["escalations"]:
+                _etl   = (_esc.get("text") or "").strip().lower()
+                _canon = _etl_to_canonical.get(_etl)
+                if not _canon:
+                    continue
+                _csi, _cei = _canon
+                _dec       = st.session_state.get(f"esc_dec_{_csi}_{_cei}", _DEC_OPTS[0])
+                _flag      = _esc.get("text", "")
+                _etag      = _esc.get("tag", "")
+                _ereason   = _esc.get("reason", "")
+                _econtext  = _esc.get("context", "")
+                _existing  = {r["text"] for r in _sa["proposed_redactions"]}
+                _tlbl      = REDACTION_TAGS.get(_etag, {}).get("label", _etag)
+                if _dec == _DEC_OPTS[1] and _flag and _flag not in _existing:
+                    _sa["proposed_redactions"].append({
+                        "text": _flag, "tag": _etag, "reason": _ereason,
+                        "replacement": f"[REDACTED – {_ereason or _tlbl}]",
+                        "context": _econtext, "approved": True,
+                    })
+                elif _dec == _DEC_OPTS[2]:
+                    _sa["proposed_redactions"] = [
+                        r for r in _sa["proposed_redactions"]
+                        if not (r.get("text") == _flag and r.get("tag") == _etag)
+                    ]
+
+        # Re-sync after escalation additions
+        for _sa in _analyses:
+            for _rr in _sa["proposed_redactions"]:
+                _tl = (_rr.get("text") or "").strip().lower()
+                _canon = _tl_to_canonical.get(_tl)
+                if _canon:
+                    _csi, _cri = _canon
+                    _rr["approved"]    = st.session_state.get(f"approve_{_csi}_{_cri}", True)
+                    _rr["replacement"] = st.session_state.get(f"repl_{_csi}_{_cri}", "[REDACTED]") or "[REDACTED]"
+                else:
+                    _rr.setdefault("approved", True)
+
+    _propagate_decisions()
+
+    # ── Phase 3 — Progress banner (counts based on unique items) ───────────────
+
+    _n_unique_total    = len(_unique_items_ordered)
+    _n_unique_approved = sum(1 for _, _csi, _cri, _ in _unique_items_ordered
+                             if st.session_state.get(f"approve_{_csi}_{_cri}", True))
+    _n_esc_unique      = len(_esc_unique_ordered)
+    _n_esc_decided     = sum(1 for _, _esi, _eei, _, _ in _esc_unique_ordered
+                             if st.session_state.get(f"esc_dec_{_esi}_{_eei}", _DEC_OPTS[0]) != _DEC_OPTS[0])
+    _n_esc_pending     = _n_esc_unique - _n_esc_decided
+    _all_ready         = _n_esc_pending == 0
 
     # Progress bar HTML banner
-    _esc_pct  = int(_n_esc_decided / _total_esc * 100) if _total_esc > 0 else 100
+    _esc_pct  = int(_n_esc_decided / _n_esc_unique * 100) if _n_esc_unique > 0 else 100
     _bar_col  = "#3cb86a" if _all_ready else "#f0a030"
     st.markdown(
         f"""
@@ -3791,11 +3887,11 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
           <div style="display:flex;gap:32px;margin-bottom:12px">
             <div>
               <div style="color:#6a80a0;font-size:.75rem;text-transform:uppercase;letter-spacing:.5px">Redactions approved</div>
-              <div style="color:#0a2040;font-size:1.3rem;font-weight:700">{_n_approved_total} <span style="color:#7a90b0;font-size:.9rem">/ {_total_prop}</span></div>
+              <div style="color:#0a2040;font-size:1.3rem;font-weight:700">{_n_unique_approved} <span style="color:#7a90b0;font-size:.9rem">/ {_n_unique_total}</span></div>
             </div>
             <div>
               <div style="color:#6a80a0;font-size:.75rem;text-transform:uppercase;letter-spacing:.5px">Escalations decided</div>
-              <div style="color:#0a2040;font-size:1.3rem;font-weight:700">{_n_esc_decided} <span style="color:#7a90b0;font-size:.9rem">/ {_total_esc}</span></div>
+              <div style="color:#0a2040;font-size:1.3rem;font-weight:700">{_n_esc_decided} <span style="color:#7a90b0;font-size:.9rem">/ {_n_esc_unique}</span></div>
             </div>
             <div style="margin-left:auto;display:flex;align-items:center">
               {"<span style='background:#e6f9ec;border:1px solid #52c271;border-radius:20px;padding:4px 14px;color:#1a7a36;font-weight:600'>✅ Ready to build</span>" if _all_ready else f"<span style='background:#fff8e6;border:1px solid #f0a030;border-radius:20px;padding:4px 14px;color:#8a5a00;font-weight:600'>⚠️ {_n_esc_pending} escalation{'s' if _n_esc_pending != 1 else ''} pending</span>"}
@@ -3813,34 +3909,241 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
         unsafe_allow_html=True,
     )
 
-    st.markdown("### Review Proposed Redactions")
+    # ── Phase 4 — STEP 1: Global unique identifiers table ─────────────────────
+
+    st.markdown("### Step 1 — Bundle-wide Redaction Decisions")
     st.caption(
-        "Tick **✓** to approve a redaction · untick to keep the text as-is.  "
-        "Escalations (🔴) require a manual decision before the document is released."
+        "Each identifier appears once regardless of how many documents contain it. "
+        "Your ✓/✗ decision applies to every document in the bundle automatically."
     )
-    st.divider()
 
-    # ── Build canonical-key map: each unique text gets one master checkbox key ─
-    # The first document/item that introduces a given text (case-insensitive)
-    # becomes the canonical instance.  All later instances share the same
-    # session_state key so ticking one ticks all.
-    _text_canonical: dict[str, tuple[int, int]] = {}   # text_lower → (doc_i, item_j)
-    for _si, _sa in enumerate(_analyses):
-        for _ri, _rr in enumerate(_sa["proposed_redactions"]):
-            _tl = (_rr.get("text") or "").strip().lower()
-            if _tl and _tl not in _text_canonical:
-                _text_canonical[_tl] = (_si, _ri)
+    _ga1, _ga2, _ = st.columns([1, 1, 5])
+    if _ga1.button("✅ Approve All", key="app_all_global"):
+        for _tl, _csi, _cri, _ in _unique_items_ordered:
+            st.session_state[f"approve_{_csi}_{_cri}"] = True
+        st.rerun()
+    if _ga2.button("❌ Reject All", key="rej_all_global"):
+        for _tl, _csi, _cri, _ in _unique_items_ordered:
+            st.session_state[f"approve_{_csi}_{_cri}"] = False
+        st.rerun()
 
-    _text_seen_globally: set[str] = set()   # texts already rendered in any document
+    # Group by tag
+    _items_by_tag: dict[str, list] = {}
+    for _tl, _csi, _cri, _crr in _unique_items_ordered:
+        _tag = _crr.get("tag", "")
+        _items_by_tag.setdefault(_tag, []).append((_tl, _csi, _cri, _crr))
+
+    for _tag, _tag_items in _items_by_tag.items():
+        _tag_info  = REDACTION_TAGS.get(_tag, {})
+        _tag_label = _tag_info.get("label", _tag) if _tag else "Untagged"
+        _n_items   = len(_tag_items)
+        _n_approved_tag = sum(
+            1 for _, _csi, _cri, _ in _tag_items
+            if st.session_state.get(f"approve_{_csi}_{_cri}", True)
+        )
+        with st.expander(
+            f"**{_tag_label}** — {_n_items} unique · {_n_approved_tag} approved",
+            expanded=True,
+        ):
+            _ca1, _ca2, _ = st.columns([1, 1, 5])
+            if _ca1.button("✅ All", key=f"app_cat_{_tag}"):
+                for _, _csi, _cri, _ in _tag_items:
+                    st.session_state[f"approve_{_csi}_{_cri}"] = True
+                st.rerun()
+            if _ca2.button("❌ None", key=f"rej_cat_{_tag}"):
+                for _, _csi, _cri, _ in _tag_items:
+                    st.session_state[f"approve_{_csi}_{_cri}"] = False
+                st.rerun()
+
+            _hdr1, _hdr2, _hdr3, _hdr4 = st.columns([1, 4, 2, 2])
+            _hdr1.markdown("<span style='color:#6a80a0;font-size:.78rem'>APPROVE</span>", unsafe_allow_html=True)
+            _hdr2.markdown("<span style='color:#6a80a0;font-size:.78rem'>TEXT / REASON</span>", unsafe_allow_html=True)
+            _hdr3.markdown("<span style='color:#6a80a0;font-size:.78rem'>REPLACEMENT LABEL</span>", unsafe_allow_html=True)
+            _hdr4.markdown("<span style='color:#6a80a0;font-size:.78rem'>FOUND IN</span>", unsafe_allow_html=True)
+            st.markdown("<hr style='margin:4px 0 8px;border-color:#dde5f0'>", unsafe_allow_html=True)
+
+            for _tl, _csi, _cri, _crr in _tag_items:
+                _ak       = f"approve_{_csi}_{_cri}"
+                _rk       = f"repl_{_csi}_{_cri}"
+                _text     = _crr.get("text", "")
+                _reason   = (_crr.get("reason") or "")[:140]
+                _approved = st.session_state.get(_ak, True)
+                _docs_for_tl = _tl_to_docs.get(_tl, [])
+
+                _txt_style = (
+                    "background:rgba(220,50,50,.10);border-radius:4px;"
+                    "padding:2px 6px;color:#c0001a;font-family:monospace;font-size:.85rem"
+                    if _approved else
+                    "background:#f0f4f8;border-radius:4px;"
+                    "padding:2px 6px;color:#6a80a0;font-family:monospace;font-size:.85rem;"
+                    "text-decoration:line-through"
+                )
+
+                c_chk, c_txt, c_repl, c_found = st.columns([1, 4, 2, 2])
+                with c_chk:
+                    _cb_val = st.checkbox(
+                        "✓",
+                        key=_ak,
+                        help="Tick to redact · untick to keep",
+                        label_visibility="collapsed",
+                    )
+                    st.caption("✓ Redact" if _cb_val else "✗ Keep")
+                with c_txt:
+                    st.markdown(
+                        f"<span style='{_txt_style}'>{_text}</span>"
+                        + (f"<br><span style='color:#3a6090;font-size:.78rem'>{_reason}</span>" if _reason else ""),
+                        unsafe_allow_html=True,
+                    )
+                with c_repl:
+                    st.text_input(
+                        "Replacement",
+                        key=_rk,
+                        label_visibility="collapsed",
+                        placeholder="[REDACTED]",
+                    )
+                with c_found:
+                    if len(_docs_for_tl) == 1:
+                        st.caption(f"📄 {_docs_for_tl[0]}")
+                    else:
+                        _doc_list_md = "\n".join(f"- {_d}" for _d in _docs_for_tl)
+                        st.caption(f"📄 {len(_docs_for_tl)} documents:\n{_doc_list_md}")
+                st.markdown(
+                    "<hr style='margin:2px 0 6px;border-color:#e8edf5'>",
+                    unsafe_allow_html=True,
+                )
+
+    # ── Phase 5 — STEP 2: Escalations (unique, deduplicated) ──────────────────
+
+    st.markdown("### Step 2 — Escalations · Require Clinical / IG Review")
+    st.info(
+        "Each unique passage is shown once; your decision applies to every document where it appears."
+    )
+
+    if _esc_unique_ordered:
+        _n_esc_total_unique = len(_esc_unique_ordered)
+        for _esc_idx, (_etl, _esi, _eei, _esc_item, _esc_docs) in enumerate(_esc_unique_ordered):
+            _tag      = _esc_item.get("tag", "")
+            _tag_info = REDACTION_TAGS.get(_tag, {})
+            _label    = _tag_info.get("label", _tag)
+            _desc     = _tag_info.get("desc", "")
+            _dot      = _ESC_TAG_DOT.get(_tag, "🟡")
+            _flagged  = _esc_item.get("text", "")
+            _reason   = _esc_item.get("reason", "")
+            _context  = _esc_item.get("context", "")
+            _dec_key  = f"esc_dec_{_esi}_{_eei}"
+
+            if len(_esc_docs) > 1:
+                st.warning(
+                    f"Found in **{len(_esc_docs)} documents** — decision applies to all: "
+                    + ", ".join(_esc_docs)
+                )
+
+            with st.container(border=True):
+                # ── Card header ──────────────────────────────────────────────
+                hcol1, hcol2 = st.columns([5, 1])
+                with hcol1:
+                    st.markdown(f"##### {_dot} {_label}")
+                with hcol2:
+                    st.caption(f"*{_esc_idx + 1} / {_n_esc_total_unique}*")
+
+                if _desc:
+                    st.caption(f"📋 **Category:** {_desc}")
+
+                st.markdown("---")
+
+                # ── Flagged text + AI reasoning ──────────────────────────────
+                fcol, rcol = st.columns([3, 2])
+                with fcol:
+                    st.markdown("**🚩 Flagged passage**")
+                    st.code(_flagged or "*(no text captured)*", language=None)
+                with rcol:
+                    st.markdown("**🤖 AI reasoning**")
+                    if _reason:
+                        st.markdown(
+                            f"<div style='background:#e8f0fc;"
+                            f"border-left:3px solid #005EB8;"
+                            f"border-radius:6px;padding:10px 14px;"
+                            f"color:#1a2a4a;font-size:.88rem'>"
+                            f"{_reason}</div>",
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.caption("*(no reasoning recorded)*")
+
+                # ── Inline document context preview ──────────────────────────
+                # Use first document that contains this escalation for context
+                _ctx_found = False
+                for _sa in _analyses:
+                    if _sa["filename"] in _esc_docs:
+                        _doc_text = _sa.get("text", "")
+                        if _doc_text and _flagged:
+                            _idx = _doc_text.find(_flagged)
+                            if _idx == -1:
+                                _probe = _flagged[:50].lower()
+                                _idx   = _doc_text.lower().find(_probe)
+                            if _idx != -1:
+                                _start   = max(0, _idx - 350)
+                                _end     = min(len(_doc_text), _idx + len(_flagged) + 350)
+                                _snippet = _doc_text[_start:_end]
+                                if _start > 0:
+                                    _snippet = "…" + _snippet
+                                if _end < len(_doc_text):
+                                    _snippet = _snippet + "…"
+                                with st.expander("📄 Show surrounding document context", expanded=False):
+                                    st.caption(
+                                        "The passage below is extracted from the original document "
+                                        "around the flagged text, to help you judge the full context."
+                                    )
+                                    st.code(_snippet, language=None)
+                                _ctx_found = True
+                                break
+
+                if not _ctx_found and _context:
+                    with st.expander("📄 Context (from AI)", expanded=False):
+                        st.code(_context, language=None)
+
+                st.markdown("---")
+
+                # ── Decision control ─────────────────────────────────────────
+                _decision = st.radio(
+                    "**Your decision:**",
+                    options=_DEC_OPTS,
+                    key=_dec_key,
+                    horizontal=True,
+                    help=(
+                        "• Awaiting decision — no action yet  \n"
+                        "• Redact this passage — adds to the redaction list below  \n"
+                        "• Release as-is — text will appear in the final bundle"
+                    ),
+                )
+                if _decision == _DEC_OPTS[1]:
+                    _n_aff = len(_esc_docs)
+                    st.error(
+                        f"This passage will be **redacted** in all {_n_aff} document(s)."
+                        if _n_aff > 1 else
+                        "This passage will be **redacted** in the final bundle."
+                    )
+                elif _decision == _DEC_OPTS[2]:
+                    st.success("This passage will be **released** as-is.")
+
+        _propagate_decisions()
+    else:
+        st.success("No escalations.")
+
+    # ── Phase 6 — STEP 3: Document Details ────────────────────────────────────
+
+    st.markdown("### Step 3 — Document Details")
+    st.caption(
+        "Verify section assignments and optionally remove whole pages. "
+        "All redaction decisions from Steps 1 & 2 are already applied."
+    )
 
     for i, analysis in enumerate(_analyses):
-        fname      = analysis["filename"]
-        n_red      = len(analysis["proposed_redactions"])
-        n_esc      = len(analysis["escalations"])
-        has_err    = bool(analysis.get("error"))
-        n_approved = sum(1 for r in analysis["proposed_redactions"] if r.get("approved", True))
+        fname   = analysis["filename"]
+        has_err = bool(analysis.get("error"))
+        n_esc   = len(analysis["escalations"])
 
-        icon = "❌" if has_err else ("🔴" if n_esc > 0 else ("✏️" if n_red > 0 else "✅"))
+        _n_red  = sum(1 for r in analysis["proposed_redactions"] if r.get("approved", True))
 
         _doc_date = analysis.get("doc_date")
         _date_str = (
@@ -3848,10 +4151,19 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
             if _doc_date and _doc_date != datetime.date.min
             else "date unknown"
         )
+
+        # Determine pending escalations for this doc (any not decided)
+        _doc_esc_pending = sum(
+            1 for _etl, _esi, _eei, _esc_item, _esc_docs in _esc_unique_ordered
+            if fname in _esc_docs
+            and st.session_state.get(f"esc_dec_{_esi}_{_eei}", _DEC_OPTS[0]) == _DEC_OPTS[0]
+        )
+
+        icon = "❌" if has_err else ("🔴" if _doc_esc_pending > 0 else ("✏️" if _n_red > 0 else "✅"))
+
         with st.expander(
-            f"{icon}  {fname}  —  {n_approved}/{n_red} redactions approved  ·  "
-            f"{n_esc} escalation(s)  ·  {_date_str}  ·  section: **{analysis['section']}**",
-            expanded=(n_esc > 0 or n_red > 0 or has_err),
+            f"{icon} {fname} — {_n_red} redactions · {_date_str} · section: {analysis['section']}",
+            expanded=has_err,
         ):
             if has_err:
                 st.error(f"Failed to process: {analysis['error']}")
@@ -3859,13 +4171,14 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
 
             # LLM debug output
             if show_debug:
+                n_red_full   = len(analysis["proposed_redactions"])
                 llm_raw      = analysis.get("llm_raw", "")
                 llm_parse_ok = analysis.get("llm_parse_ok", True)
                 n_chunks     = analysis.get("chunks_analysed", 1)
                 chars_total  = analysis.get("chars_total", 0)
                 with st.expander(
                     "🔧 Raw LLM response",
-                    expanded=(not llm_parse_ok or (n_red == 0 and n_esc == 0)),
+                    expanded=(not llm_parse_ok or (n_red_full == 0 and n_esc == 0)),
                 ):
                     if chars_total:
                         covered = min(n_chunks * 6000, chars_total)
@@ -3885,7 +4198,7 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
                         )
                         st.code(llm_raw, language=None)
                     else:
-                        if n_red == 0 and n_esc == 0:
+                        if n_red_full == 0 and n_esc == 0:
                             st.success(
                                 "✅ JSON parsed successfully. "
                                 "The LLM found no third-party or sensitive content "
@@ -3923,234 +4236,24 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
             analysis["section"] = new_sec
             st.divider()
 
-            # ── Escalations ──────────────────────────────────────────────────
-            if analysis["escalations"]:
-                st.markdown("#### 🔴 Escalations — Requires Clinical / IG Review")
-                st.info(
-                    "These passages were **not automatically redacted** — they need a "
-                    "qualified human decision. Read the flagged text and document context "
-                    "below, then choose an action for each one."
+            # ── Redaction summary ─────────────────────────────────────────────
+            _approved_texts = [
+                r.get("text", "") for r in analysis["proposed_redactions"]
+                if r.get("approved", True)
+            ]
+            if _approved_texts:
+                _shown = _approved_texts[:12]
+                _summary_parts = " ".join(
+                    f"<code style='background:#fdecea;padding:1px 5px;"
+                    f"border-radius:3px;color:#c0001a;font-size:.8rem'>{t}</code>"
+                    for t in _shown
                 )
-
-                _ESC_TAG_DOT = {
-                    "CLINICIAN_CONTEXT_AMBIGUOUS": "🟡",
-                    "SAFEGUARDING_RISK":           "🔴",
-                    "DOMESTIC_ABUSE_CONTEXT":      "🔴",
-                    "CHILD_PROTECTION":            "🔴",
-                    "SERIOUS_HARM_RISK":           "🔴",
-                    "SENSITIVE_CLINICAL_OPINION":  "🟠",
-                    "LEGAL_PRIVILEGE":             "🟠",
-                    "DPA_SCHEDULE3_EXEMPTION":     "🟠",
-                }
-                _n_esc = len(analysis["escalations"])
-
-                for ei, esc in enumerate(analysis["escalations"]):
-                    tag      = esc.get("tag", "")
-                    tag_info = REDACTION_TAGS.get(tag, {})
-                    label    = tag_info.get("label", tag)
-                    desc     = tag_info.get("desc", "")
-                    dot      = _ESC_TAG_DOT.get(tag, "🟡")
-                    flagged  = esc.get("text", "")
-                    reason   = esc.get("reason", "")
-                    context  = esc.get("context", "")
-                    dec_key  = f"esc_dec_{i}_{ei}"
-
-                    with st.container(border=True):
-                        # ── Card header ──────────────────────────────────────
-                        hcol1, hcol2 = st.columns([5, 1])
-                        with hcol1:
-                            st.markdown(f"##### {dot} {label}")
-                        with hcol2:
-                            st.caption(f"*{ei + 1} / {_n_esc}*")
-
-                        # What this category means
-                        if desc:
-                            st.caption(f"📋 **Category:** {desc}")
-
-                        st.markdown("---")
-
-                        # ── Flagged text + AI reasoning ──────────────────────
-                        fcol, rcol = st.columns([3, 2])
-                        with fcol:
-                            st.markdown("**🚩 Flagged passage**")
-                            st.code(flagged or "*(no text captured)*", language=None)
-                        with rcol:
-                            st.markdown("**🤖 AI reasoning**")
-                            if reason:
-                                st.markdown(
-                                    f"<div style='background:#e8f0fc;"
-                                    f"border-left:3px solid #005EB8;"
-                                    f"border-radius:6px;padding:10px 14px;"
-                                    f"color:#1a2a4a;font-size:.88rem'>"
-                                    f"{reason}</div>",
-                                    unsafe_allow_html=True,
-                                )
-                            else:
-                                st.caption("*(no reasoning recorded)*")
-
-                        # ── Inline document context preview ──────────────────
-                        doc_text = analysis.get("text", "")
-                        _ctx_found = False
-                        if doc_text and flagged:
-                            _idx = doc_text.find(flagged)
-                            if _idx == -1:
-                                # Try matching the first 50 chars case-insensitively
-                                _probe = flagged[:50].lower()
-                                _idx   = doc_text.lower().find(_probe)
-                            if _idx != -1:
-                                _start   = max(0, _idx - 350)
-                                _end     = min(len(doc_text), _idx + len(flagged) + 350)
-                                _snippet = doc_text[_start:_end]
-                                if _start > 0:
-                                    _snippet = "…" + _snippet
-                                if _end < len(doc_text):
-                                    _snippet = _snippet + "…"
-                                with st.expander("📄 Show surrounding document context", expanded=False):
-                                    st.caption(
-                                        "The passage below is extracted from the original document "
-                                        "around the flagged text, to help you judge the full context."
-                                    )
-                                    st.code(_snippet, language=None)
-                                _ctx_found = True
-
-                        if not _ctx_found and context:
-                            with st.expander("📄 Context (from AI)", expanded=False):
-                                st.code(context, language=None)
-
-                        st.markdown("---")
-
-                        # ── Decision control ─────────────────────────────────
-                        decision = st.radio(
-                            "**Your decision:**",
-                            options=_DEC_OPTS,
-                            key=dec_key,
-                            horizontal=True,
-                            help=(
-                                "• Awaiting decision — no action yet  \n"
-                                "• Redact this passage — adds to the redaction list below  \n"
-                                "• Release as-is — text will appear in the final bundle"
-                            ),
-                        )
-                        if decision == _DEC_OPTS[1]:
-                            st.error("This passage will be **redacted** in the final bundle.")
-                        elif decision == _DEC_OPTS[2]:
-                            st.success("This passage will be **released** as-is.")
-
-                        # Apply decision
-                        _existing_texts = {r["text"] for r in analysis["proposed_redactions"]}
-                        if decision == _DEC_OPTS[1]:   # Redact
-                            if flagged and flagged not in _existing_texts:
-                                analysis["proposed_redactions"].append({
-                                    "text":        flagged,
-                                    "tag":         tag,
-                                    "reason":      reason,
-                                    "replacement": f"[REDACTED – {reason or label}]",
-                                    "context":     context,
-                                    "approved":    True,
-                                })
-                        elif decision == _DEC_OPTS[2]:  # Release
-                            # Remove from proposed_redactions if previously added
-                            analysis["proposed_redactions"] = [
-                                r for r in analysis["proposed_redactions"]
-                                if not (r.get("text") == flagged and r.get("tag") == tag)
-                            ]
-
-                st.divider()
-
-            # ── Proposed redactions table ─────────────────────────────────────
-            if analysis["proposed_redactions"]:
-                st.markdown("#### ✏️ Proposed Redactions")
-
-                ba1, ba2, _ = st.columns([1, 1, 5])
-                if ba1.button("Approve All", key=f"app_all_{i}"):
-                    for j, r in enumerate(analysis["proposed_redactions"]):
-                        r["approved"] = True
-                        st.session_state[f"approve_{i}_{j}"] = True
-                    st.rerun()
-                if ba2.button("Reject All", key=f"rej_all_{i}"):
-                    for j, r in enumerate(analysis["proposed_redactions"]):
-                        r["approved"] = False
-                        st.session_state[f"approve_{i}_{j}"] = False
-                    st.rerun()
-
-                # ── Individual rows — stable session_state keys prevent state loss ──
-                _hdr1, _hdr2, _hdr3, _hdr4 = st.columns([1, 4, 2, 2])
-                _hdr1.markdown("<span style='color:#6a80a0;font-size:.78rem'>APPROVE</span>", unsafe_allow_html=True)
-                _hdr2.markdown("<span style='color:#6a80a0;font-size:.78rem'>TEXT TO REDACT  ·  CATEGORY  ·  REASON</span>", unsafe_allow_html=True)
-                _hdr3.markdown("<span style='color:#6a80a0;font-size:.78rem'>REPLACEMENT LABEL</span>", unsafe_allow_html=True)
-                _hdr4.markdown("<span style='color:#6a80a0;font-size:.78rem'>CONTEXT</span>", unsafe_allow_html=True)
-                st.markdown("<hr style='margin:4px 0 8px;border-color:#dde5f0'>", unsafe_allow_html=True)
-
-                _auto_synced_count = 0
-                for j, r in enumerate(analysis["proposed_redactions"]):
-                    _tl = (r.get("text") or "").strip().lower()
-                    _ci, _cj = _text_canonical.get(_tl, (i, j))
-                    # Canonical session_state keys — shared across all duplicate instances
-                    _ak = f"approve_{_ci}_{_cj}"
-                    _rk = f"repl_{_ci}_{_cj}"
-
-                    if _tl in _text_seen_globally:
-                        # Already shown elsewhere — sync state silently, skip rendering
-                        r["approved"]    = st.session_state.get(_ak, True)
-                        r["replacement"] = st.session_state.get(_rk, "[REDACTED]")
-                        _auto_synced_count += 1
-                        continue
-
-                    _text_seen_globally.add(_tl)
-
-                    tag_info = REDACTION_TAGS.get(r.get("tag", ""), {})
-                    _label   = tag_info.get("label", r.get("tag", ""))
-                    _text    = r.get("text", "")
-                    _reason  = (r.get("reason") or "")[:140]
-                    _ctx     = (r.get("context") or "")[:120]
-
-                    c_chk, c_txt, c_repl, c_ctx = st.columns([1, 4, 2, 2])
-                    with c_chk:
-                        approved = st.checkbox(
-                            "✓",
-                            key=_ak,
-                            help="Tick to redact · untick to keep",
-                            label_visibility="collapsed",
-                        )
-                        r["approved"] = approved
-                        st.caption("✓ Redact" if approved else "✗ Keep")
-                    with c_txt:
-                        _txt_style = (
-                            "background:rgba(220,50,50,.10);border-radius:4px;"
-                            "padding:2px 6px;color:#c0001a;font-family:monospace;font-size:.85rem"
-                            if approved else
-                            "background:#f0f4f8;border-radius:4px;"
-                            "padding:2px 6px;color:#6a80a0;font-family:monospace;font-size:.85rem"
-                        )
-                        st.markdown(
-                            f"<span style='{_txt_style}'>{_text}</span>"
-                            f"<br><span style='color:#3a6090;font-size:.78rem'>"
-                            f"<b>{_label}</b>"
-                            + (f" · {_reason}" if _reason else "")
-                            + "</span>",
-                            unsafe_allow_html=True,
-                        )
-                    with c_repl:
-                        new_repl = st.text_input(
-                            "Replacement",
-                            key=_rk,
-                            label_visibility="collapsed",
-                            placeholder="[REDACTED]",
-                        )
-                        r["replacement"] = new_repl.strip() if new_repl.strip() else "[REDACTED]"
-                    with c_ctx:
-                        if _ctx:
-                            st.caption(_ctx)
-                    st.markdown(
-                        "<hr style='margin:2px 0 6px;border-color:#e8edf5'>",
-                        unsafe_allow_html=True,
-                    )
-
-                if _auto_synced_count:
-                    st.caption(
-                        f"ℹ️ {_auto_synced_count} suggestion(s) hidden — identical text already "
-                        f"reviewed above and auto-matched to the same decision."
-                    )
+                if len(_approved_texts) > 12:
+                    _summary_parts += f" <span style='color:#7a90b0;font-size:.8rem'>+{len(_approved_texts) - 12} more</span>"
+                st.markdown(
+                    f"<div style='margin-bottom:8px'><b>Approved redactions:</b> {_summary_parts}</div>",
+                    unsafe_allow_html=True,
+                )
 
             # ── Context preview panel ─────────────────────────────────────────
             _all_items = analysis["proposed_redactions"] + [
@@ -4182,7 +4285,6 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
                         _ctx = _sel_item.get("context", "")
                         if _ctx:
                             st.markdown("**Surrounding context (from LLM):**")
-                            # Highlight the term in the context snippet
                             _ctx_hl = _ctx.replace(
                                 _sel_text,
                                 f"**:orange[{_sel_text}]**"
@@ -4213,7 +4315,6 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
                     "Select pages to delete entirely from the final bundle — e.g. misfiled "
                     "records, letters about another patient, blank pages."
                 )
-                # Build labels: "Page N — first 90 chars of text"
                 _page_labels = []
                 for _pn in range(_doc_for_pages.page_count):
                     _pg_txt = _doc_for_pages[_pn].get_text("text")[:90].replace("\n", " ").strip()
