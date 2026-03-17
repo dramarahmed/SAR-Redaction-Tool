@@ -11,8 +11,8 @@ output/
 redacted/
 *.zip
 
-# Streamlit
-.streamlit/
+# Streamlit — ignore secrets but commit theme config
+.streamlit/secrets.toml
 
 # OS
 Thumbs.db

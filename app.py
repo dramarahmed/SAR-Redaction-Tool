@@ -406,341 +406,275 @@ except Exception:
     _LOGO_B64 = ""
 
 
-# ── Glassmorphism CSS ─────────────────────────────────────────────────────────
+# ── Light-theme CSS ────────────────────────────────────────────────────────────
 def _inject_css():
     st.markdown("""
 <style>
-/* ═══ Background ═══ */
-.stApp {
-    background: linear-gradient(140deg, #050d1a 0%, #091628 45%, #0c1e3b 75%, #06101f 100%) !important;
-}
-.stApp::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    background:
-        radial-gradient(ellipse 55% 40% at 12% 72%, rgba(0,94,184,.18) 0%, transparent 60%),
-        radial-gradient(ellipse 45% 55% at 88% 18%, rgba(0,64,130,.12) 0%, transparent 60%),
-        radial-gradient(ellipse 70% 70% at 50% 50%, rgba(0,20,60,.3) 0%, transparent 70%);
-    pointer-events: none;
-    z-index: 0;
-}
-
+/* ═══ App background — white/light-grey ═══ */
+.stApp { background: #f5f7fa !important; }
+.stApp::before { display: none !important; }
+.main .block-container { background: transparent; padding-top: 1rem; }
 /* ═══ Sidebar ═══ */
 [data-testid="stSidebar"] {
-    background: rgba(4,12,30,.78) !important;
-    backdrop-filter: blur(28px) !important;
-    -webkit-backdrop-filter: blur(28px) !important;
-    border-right: 1px solid rgba(0,94,184,.22) !important;
-    box-shadow: 4px 0 40px rgba(0,0,0,.45) !important;
+    background: #ffffff !important;
+    border-right: 2px solid #dde5f0 !important;
+    box-shadow: 2px 0 10px rgba(0,94,184,.07) !important;
 }
-[data-testid="stSidebar"] * { color: rgba(210,230,255,.9) !important; }
-[data-testid="stSidebar"] .stMarkdown h1,
-[data-testid="stSidebar"] .stMarkdown h2,
-[data-testid="stSidebar"] .stMarkdown h3 { color: #fff !important; }
-
-/* ═══ Main block ═══ */
-.main .block-container { background: transparent; padding-top: 1rem; }
+[data-testid="stSidebar"] * {
+    color: #1a2a4a !important;
+    -webkit-text-fill-color: #1a2a4a !important;
+}
 
 /* ═══ Headings ═══ */
-h1 { color: #fff !important; font-weight: 700 !important; letter-spacing: -.4px !important; }
-h2, h3 { color: rgba(195,218,255,.95) !important; font-weight: 600 !important; }
-p, li { color: rgba(195,218,255,.85) !important; }
-/* Keep data-editor cells readable — let the Streamlit theme handle them */
-[data-testid="stDataEditor"] td,
-[data-testid="stDataEditor"] th { color: inherit; }
-.stCaption, [data-testid="stCaptionContainer"] p { color: rgba(140,175,220,.72) !important; }
+h1 { color: #0a2040 !important; font-weight: 700 !important; }
+h2, h3 { color: #1a3060 !important; font-weight: 600 !important; }
+p, li { color: #2c3e5a !important; }
+.stCaption, [data-testid="stCaptionContainer"] p { color: #5a7090 !important; }
 
-/* ═══ Buttons ═══ */
+/* ═══ Buttons — NHS blue ═══ */
 .stButton > button {
-    background: rgba(0,94,184,.22) !important;
-    backdrop-filter: blur(8px) !important;
-    border: 1px solid rgba(0,94,184,.45) !important;
-    color: rgba(210,232,255,.95) !important;
-    border-radius: 10px !important;
+    background: #ffffff !important;
+    border: 1.5px solid #005EB8 !important;
+    color: #005EB8 !important;
+    border-radius: 8px !important;
     font-weight: 600 !important;
-    letter-spacing: .3px !important;
-    transition: all .22s cubic-bezier(.4,0,.2,1) !important;
-    box-shadow: 0 2px 14px rgba(0,94,184,.14), inset 0 1px 0 rgba(255,255,255,.06) !important;
+    transition: all .18s ease !important;
+    box-shadow: 0 1px 4px rgba(0,94,184,.10) !important;
 }
 .stButton > button:hover {
-    background: rgba(0,94,184,.48) !important;
-    border-color: rgba(0,130,240,.75) !important;
-    box-shadow: 0 4px 22px rgba(0,94,184,.38), 0 0 32px rgba(0,94,184,.14), inset 0 1px 0 rgba(255,255,255,.1) !important;
-    transform: translateY(-1px) !important;
+    background: #005EB8 !important;
+    color: #ffffff !important;
+    box-shadow: 0 3px 12px rgba(0,94,184,.22) !important;
 }
 .stButton > button[kind="primary"] {
-    background: linear-gradient(135deg, rgba(0,94,184,.68) 0%, rgba(0,58,130,.85) 100%) !important;
-    border-color: rgba(0,148,255,.55) !important;
-    box-shadow: 0 4px 26px rgba(0,94,184,.42), inset 0 1px 0 rgba(255,255,255,.12) !important;
+    background: #005EB8 !important;
+    color: #ffffff !important;
+    border-color: #005EB8 !important;
 }
-.stButton > button[kind="primary"]:hover {
-    background: linear-gradient(135deg, rgba(0,112,212,.82) 0%, rgba(0,72,160,.95) 100%) !important;
-    box-shadow: 0 6px 32px rgba(0,94,184,.58), 0 0 44px rgba(0,94,184,.18), inset 0 1px 0 rgba(255,255,255,.15) !important;
-}
+.stButton > button[kind="primary"]:hover { background: #004a9a !important; }
 .stDownloadButton > button {
-    background: linear-gradient(135deg, rgba(28,155,60,.52) 0%, rgba(18,110,42,.72) 100%) !important;
-    border-color: rgba(50,200,90,.5) !important;
-    box-shadow: 0 4px 22px rgba(28,155,60,.3) !important;
+    background: #1a7a36 !important;
+    color: #ffffff !important;
+    border-color: #1a7a36 !important;
+    border-radius: 8px !important;
+    font-weight: 600 !important;
 }
-.stDownloadButton > button:hover {
-    box-shadow: 0 6px 30px rgba(28,155,60,.48) !important;
-}
+.stDownloadButton > button:hover { background: #155f2b !important; }
 
 /* ═══ Metrics ═══ */
 [data-testid="stMetric"] {
-    background: rgba(255,255,255,.05) !important;
-    backdrop-filter: blur(14px) !important;
-    border: 1px solid rgba(255,255,255,.08) !important;
-    border-radius: 14px !important;
-    padding: 18px 22px !important;
-    box-shadow: 0 4px 26px rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.05) !important;
-    transition: border-color .25s ease !important;
+    background: #ffffff !important;
+    border: 1px solid #dde5f0 !important;
+    border-radius: 12px !important;
+    padding: 16px 20px !important;
+    box-shadow: 0 2px 8px rgba(0,94,184,.07) !important;
 }
-[data-testid="stMetric"]:hover { border-color: rgba(0,94,184,.3) !important; }
-[data-testid="stMetricValue"] { color: #fff !important; font-weight: 700 !important; }
-[data-testid="stMetricLabel"] { color: rgba(140,175,220,.8) !important; }
+[data-testid="stMetricValue"] { color: #0a2040 !important; font-weight: 700 !important; }
+[data-testid="stMetricLabel"] { color: #4a6080 !important; }
 
 /* ═══ Expanders ═══ */
 [data-testid="stExpander"] {
-    background: rgba(255,255,255,.04) !important;
-    border: 1px solid rgba(255,255,255,.08) !important;
-    border-radius: 12px !important;
-    backdrop-filter: blur(10px) !important;
-    overflow: hidden;
+    background: #ffffff !important;
+    border: 1px solid #dde5f0 !important;
+    border-radius: 10px !important;
     margin-bottom: 8px !important;
-    transition: border-color .2s ease !important;
 }
-[data-testid="stExpander"]:hover { border-color: rgba(0,94,184,.26) !important; }
-[data-testid="stExpanderHeader"] { color: rgba(195,218,255,.9) !important; font-weight: 500 !important; }
+[data-testid="stExpander"]:hover { border-color: #005EB8 !important; }
+[data-testid="stExpanderHeader"] { color: #1a3060 !important; font-weight: 500 !important; }
 [data-testid="stExpanderDetails"] {
-    background: rgba(0,0,0,.14) !important;
-    border-top: 1px solid rgba(255,255,255,.06) !important;
+    background: #f9fafc !important;
+    border-top: 1px solid #e8edf5 !important;
 }
 
-/* ═══ Inputs — global (main content + sidebar) ═══ */
-/* Target every input/textarea variant Streamlit can render */
-input,
-textarea,
+/* ═══ Inputs ═══ */
+input, textarea,
 [data-baseweb="input"] input,
-[data-baseweb="base-input"] input,
 [data-baseweb="textarea"] textarea,
 .stTextInput > div > div > input,
 .stTextArea > div > div > textarea,
-.stDateInput > div > div > input,
 .stNumberInput > div > div > input {
-    background:                rgba(6,18,48,0.88) !important;
-    background-color:          rgba(6,18,48,0.88) !important;
-    border:                    1px solid rgba(0,94,184,.35) !important;
-    border-radius:             8px !important;
-    color:                     rgba(210,232,255,.95) !important;
-    -webkit-text-fill-color:   rgba(210,232,255,.95) !important;
+    background: #ffffff !important;
+    background-color: #ffffff !important;
+    border: 1px solid #b8cce0 !important;
+    border-radius: 7px !important;
+    color: #1a2a4a !important;
+    -webkit-text-fill-color: #1a2a4a !important;
 }
-input::placeholder,
-textarea::placeholder {
-    color:                   rgba(140,175,220,.45) !important;
-    -webkit-text-fill-color: rgba(140,175,220,.45) !important;
+input::placeholder, textarea::placeholder {
+    color: #8095b0 !important;
+    -webkit-text-fill-color: #8095b0 !important;
 }
-input:focus,
-textarea:focus,
+input:focus, textarea:focus,
 [data-baseweb="input"]:focus-within,
 [data-baseweb="textarea"]:focus-within {
-    border-color: rgba(0,94,184,.7) !important;
-    box-shadow:   0 0 0 2px rgba(0,94,184,.22) !important;
+    border-color: #005EB8 !important;
+    box-shadow: 0 0 0 2px rgba(0,94,184,.15) !important;
 }
-/* ── Selectbox trigger (closed state) ── */
+
+/* ═══ Selectbox ═══ */
 .stSelectbox [data-baseweb="select"],
 .stSelectbox > div > div,
 [data-baseweb="select"],
 [data-baseweb="select"] > div {
-    background:   rgba(6,18,48,0.88) !important;
-    border-color: rgba(0,94,184,.35) !important;
-    color:                   rgba(210,232,255,.95) !important;
-    -webkit-text-fill-color: rgba(210,232,255,.95) !important;
+    background: #ffffff !important;
+    border-color: #b8cce0 !important;
+    color: #1a2a4a !important;
+    -webkit-text-fill-color: #1a2a4a !important;
 }
-/* Selected value + placeholder text inside trigger */
 [data-baseweb="select"] [data-baseweb="single-value"],
 [data-baseweb="select"] [data-baseweb="placeholder"],
 [data-baseweb="select"] span,
 [data-baseweb="select"] p {
-    color:                   rgba(210,232,255,.95) !important;
-    -webkit-text-fill-color: rgba(210,232,255,.95) !important;
+    color: #1a2a4a !important;
+    -webkit-text-fill-color: #1a2a4a !important;
 }
-/* ── Dropdown popup list (renders in a portal at top of DOM) ── */
-[data-baseweb="popover"],
-[data-baseweb="menu"],
-[role="listbox"],
-ul[data-baseweb="menu"] {
-    background:    rgba(6,18,48,0.97) !important;
-    border:        1px solid rgba(0,94,184,.4) !important;
-    border-radius: 10px !important;
-    box-shadow:    0 8px 32px rgba(0,0,0,.55) !important;
+[data-baseweb="popover"], [data-baseweb="menu"],
+[role="listbox"], ul[data-baseweb="menu"] {
+    background: #ffffff !important;
+    border: 1px solid #dde5f0 !important;
+    border-radius: 8px !important;
+    box-shadow: 0 4px 20px rgba(0,0,0,.10) !important;
 }
-/* Individual dropdown options */
-[role="option"],
-[data-baseweb="menu-item"],
-li[role="option"] {
-    background:              rgba(6,18,48,0.97) !important;
-    color:                   rgba(210,232,255,.92) !important;
-    -webkit-text-fill-color: rgba(210,232,255,.92) !important;
+[role="option"], [data-baseweb="menu-item"], li[role="option"] {
+    background: #ffffff !important;
+    color: #1a2a4a !important;
+    -webkit-text-fill-color: #1a2a4a !important;
 }
-[role="option"]:hover,
-[data-baseweb="menu-item"]:hover,
-li[role="option"]:hover {
-    background: rgba(0,94,184,.35) !important;
-    color:                   #fff !important;
-    -webkit-text-fill-color: #fff !important;
+[role="option"]:hover, [data-baseweb="menu-item"]:hover {
+    background: #e8f0fc !important;
+    color: #005EB8 !important;
+    -webkit-text-fill-color: #005EB8 !important;
 }
 [aria-selected="true"][role="option"] {
-    background: rgba(0,94,184,.5) !important;
-    color:                   #fff !important;
-    -webkit-text-fill-color: #fff !important;
+    background: #005EB8 !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
 }
 
-
-/* ═══ Alert boxes (info / success / warning / error) ═══ */
-[data-testid="stAlert"] {
-    background: rgba(255,255,255,.04) !important;
-    backdrop-filter: blur(10px) !important;
-    border-radius: 10px !important;
-}
-/* Ensure all text inside alerts is readable on the dark background */
+/* ═══ Alert boxes — let Streamlit's light theme handle colour tinting ═══ */
 [data-testid="stAlert"] p,
 [data-testid="stAlert"] li,
 [data-testid="stAlert"] span,
 [data-testid="stAlert"] div,
-[data-testid="stAlert"] a,
 [data-testid="stAlertContentBlock"] p,
 [data-testid="stAlertContentBlock"] li,
 [data-testid="stAlertContentBlock"] span {
-    color: rgba(210,232,255,.92) !important;
-    -webkit-text-fill-color: rgba(210,232,255,.92) !important;
+    color: inherit !important;
+    -webkit-text-fill-color: inherit !important;
 }
 
-/* ═══ Progress bar ═══ */
+/* ═══ Progress bar — NHS blue shimmer ═══ */
 [data-testid="stProgressBar"] > div > div {
-    background: linear-gradient(90deg, #005EB8, #00a3e0, #005EB8) !important;
+    background: linear-gradient(90deg, #005EB8, #0081d3, #005EB8) !important;
     background-size: 200% 100% !important;
     animation: sar-shimmer 1.8s linear infinite !important;
     border-radius: 4px !important;
-    box-shadow: 0 0 12px rgba(0,94,184,.55) !important;
 }
 @keyframes sar-shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
 
-/* ═══ Data editor / tables ═══ */
+/* ═══ Data tables ═══ */
 [data-testid="stDataEditor"], [data-testid="stDataFrame"] {
-    background: rgba(255,255,255,.03) !important;
-    border: 1px solid rgba(255,255,255,.08) !important;
-    border-radius: 10px !important;
-    overflow: hidden !important;
+    background: #ffffff !important;
+    border: 1px solid #dde5f0 !important;
+    border-radius: 8px !important;
 }
 
 /* ═══ Code blocks ═══ */
 .stCode, code, pre {
-    background: rgba(0,0,0,.32) !important;
-    border: 1px solid rgba(255,255,255,.08) !important;
-    border-radius: 8px !important;
-    color: rgba(160,205,255,.9) !important;
+    background: #f0f4f8 !important;
+    border: 1px solid #dde5f0 !important;
+    border-radius: 7px !important;
+    color: #1a3060 !important;
 }
 
 /* ═══ Containers with border ═══ */
 [data-testid="stVerticalBlockBorderWrapper"] {
-    background: rgba(255,255,255,.04) !important;
-    border-color: rgba(255,255,255,.1) !important;
-    border-radius: 12px !important;
-    backdrop-filter: blur(8px) !important;
+    background: #ffffff !important;
+    border-color: #dde5f0 !important;
+    border-radius: 10px !important;
 }
 
 /* ═══ Divider ═══ */
-hr { border-color: rgba(255,255,255,.08) !important; }
+hr { border-color: #dde5f0 !important; }
 
 /* ═══ Toggle ═══ */
-.stToggle > label > div { background: rgba(255,255,255,.1) !important; }
+.stToggle > label > div { background: #c8d8ec !important; }
 
-/* ═══ Header card ═══ */
-.sar-header {
-    display: flex; align-items: center; gap: 18px;
-    padding: 18px 24px;
-    background: rgba(0,94,184,.12);
-    backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px);
-    border: 1px solid rgba(0,94,184,.22);
-    border-radius: 16px; margin-bottom: 20px;
-    box-shadow: 0 8px 32px rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.06);
-}
-.sar-header img { height: 54px; width: auto; border-radius: 8px; }
-.sar-header-text { flex: 1; }
-.sar-header-text h1 { margin: 0 !important; font-size: 1.55rem !important; font-weight: 700 !important; color: #fff !important; line-height: 1.2 !important; }
-.sar-header-text p  { margin: 5px 0 0; font-size: .82rem; color: rgba(140,180,230,.78); }
-
-/* ═══ Badges ═══ */
-.badge-local {
-    display: inline-flex; align-items: center; gap: 5px;
-    background: rgba(28,155,60,.16); border: 1px solid rgba(50,200,90,.38);
-    border-radius: 20px; padding: 3px 11px;
-    font-size: .72rem; color: rgba(90,220,120,.9); font-weight: 600; letter-spacing: .3px;
-}
-.badge-test {
-    display: inline-flex; align-items: center; gap: 5px;
-    background: rgba(255,160,0,.12); border: 1px solid rgba(255,160,0,.35);
-    border-radius: 20px; padding: 3px 11px;
-    font-size: .72rem; color: rgba(255,195,80,.9); font-weight: 600; letter-spacing: .3px;
-}
-
-/* ═══ Disclaimer ═══ */
-.sar-disclaimer {
-    background: rgba(255,140,0,.07);
-    border: 1px solid rgba(255,140,0,.22);
-    border-radius: 10px; padding: 10px 14px; margin: 10px 0;
-    font-size: .76rem; color: rgba(255,195,100,.82); line-height: 1.55;
-}
-
-/* ═══ File uploader — uploaded file list ═══ */
+/* ═══ File uploader ═══ */
 [data-testid="stFileUploader"] *,
 [data-testid="stFileUploaderDropzone"] *,
 [data-testid="stFileUploaderFileList"] *,
 [data-testid="stFileUploaderFile"] * {
-    color: rgba(195,218,255,.88) !important;
-    -webkit-text-fill-color: rgba(195,218,255,.88) !important;
+    color: #1a2a4a !important;
+    -webkit-text-fill-color: #1a2a4a !important;
 }
 [data-testid="stFileUploaderDropzone"] {
-    background: rgba(6,18,48,0.55) !important;
-    border: 1px dashed rgba(0,94,184,.5) !important;
-    border-radius: 10px !important;
+    background: #f5f8ff !important;
+    border: 1.5px dashed #005EB8 !important;
+    border-radius: 8px !important;
 }
 
-/* ═══ Radio buttons ═══ */
-.stRadio label,
-.stRadio span,
+/* ═══ Radio / Checkbox ═══ */
+.stRadio label, .stRadio span,
 .stRadio > div > label span,
 [data-testid="stRadio"] label,
-[data-testid="stRadio"] span {
-    color: rgba(195,218,255,.88) !important;
-    -webkit-text-fill-color: rgba(195,218,255,.88) !important;
-}
-
-/* ═══ Checkboxes ═══ */
+[data-testid="stRadio"] span,
 .stCheckbox label span,
 [data-testid="stCheckbox"] span {
-    color: rgba(195,218,255,.88) !important;
-    -webkit-text-fill-color: rgba(195,218,255,.88) !important;
+    color: #1a2a4a !important;
+    -webkit-text-fill-color: #1a2a4a !important;
 }
 
-/* ═══ Scrollbar (global) — updated to be clearly visible ═══ */
+/* ═══ Scrollbar — NHS blue, clearly visible ═══ */
 ::-webkit-scrollbar { width: 14px; height: 14px; }
-::-webkit-scrollbar-track { background: rgba(255,255,255,.04); border-radius: 7px; }
+::-webkit-scrollbar-track { background: #e8edf5; border-radius: 7px; }
 ::-webkit-scrollbar-thumb {
-    background: rgba(100,160,255,.45);
+    background: #005EB8;
     border-radius: 7px;
-    border: 3px solid transparent;
+    border: 3px solid #e8edf5;
     background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-    background: rgba(100,160,255,.72);
-    border-radius: 7px;
-    border: 3px solid transparent;
+    background: #004a9a;
+    border: 3px solid #e8edf5;
     background-clip: padding-box;
 }
-* { scrollbar-width: auto; scrollbar-color: rgba(100,160,255,.45) rgba(255,255,255,.04); }
+* { scrollbar-width: auto; scrollbar-color: #005EB8 #e8edf5; }
+
+/* ═══ Header card — solid NHS blue ═══ */
+.sar-header {
+    display: flex; align-items: center; gap: 18px;
+    padding: 18px 24px;
+    background: #005EB8;
+    border-radius: 14px; margin-bottom: 20px;
+    box-shadow: 0 4px 20px rgba(0,94,184,.25);
+}
+.sar-header img { height: 54px; width: auto; border-radius: 8px; }
+.sar-header-text { flex: 1; }
+.sar-header-text h1 { margin: 0 !important; font-size: 1.55rem !important; font-weight: 700 !important; color: #ffffff !important; line-height: 1.2 !important; }
+.sar-header-text p  { margin: 5px 0 0; font-size: .82rem; color: rgba(210,230,255,.85); }
+
+/* ═══ Badges ═══ */
+.badge-local {
+    display: inline-flex; align-items: center; gap: 5px;
+    background: #e6f9ec; border: 1px solid #52c271;
+    border-radius: 20px; padding: 3px 11px;
+    font-size: .72rem; color: #1a7a36; font-weight: 600; letter-spacing: .3px;
+}
+.badge-test {
+    display: inline-flex; align-items: center; gap: 5px;
+    background: #fff8e6; border: 1px solid #f0a030;
+    border-radius: 20px; padding: 3px 11px;
+    font-size: .72rem; color: #8a5a00; font-weight: 600; letter-spacing: .3px;
+}
+
+/* ═══ Disclaimer ═══ */
+.sar-disclaimer {
+    background: #fff8e6;
+    border: 1px solid #f0a030;
+    border-radius: 8px; padding: 10px 14px; margin: 10px 0;
+    font-size: .76rem; color: #7a4a00; line-height: 1.55;
+}
 </style>""", unsafe_allow_html=True)
 
 
@@ -3233,8 +3167,8 @@ with st.sidebar:
         )
     st.markdown(
         '<div style="text-align:center;font-size:1.1rem;font-weight:700;'
-        'color:#fff;margin:6px 0 2px">NHS Clinical Tools</div>'
-        '<div style="text-align:center;font-size:.72rem;color:rgba(140,180,220,.7);margin-bottom:8px">'
+        'color:#0a2040;margin:6px 0 2px">NHS Clinical Tools</div>'
+        '<div style="text-align:center;font-size:.72rem;color:#5a7090;margin-bottom:8px">'
         'SAR Redaction · Forms</div>',
         unsafe_allow_html=True,
     )
@@ -3291,7 +3225,7 @@ with st.sidebar:
         _stage_colours = {"upload": "#4a9eff", "review": "#f0a030", "export": "#3cb86a"}
         _sc = _stage_colours.get(st.session_state.stage, "#888")
         st.markdown(
-            f'<div style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);'
+            f'<div style="background:#ffffff;border:1px solid #dde5f0;'
             f'border-radius:8px;padding:8px 12px;font-size:.82rem;font-weight:600;'
             f'color:{_sc}">▶ {_stage_labels.get(st.session_state.stage, "")}</div>',
             unsafe_allow_html=True,
@@ -3354,8 +3288,8 @@ with st.sidebar:
     elif tool_mode == "anon":
         # ── Anonymise sidebar ─────────────────────────────────────────────────
         st.markdown(
-            '<div style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);'
-            'border-radius:8px;padding:8px 12px;font-size:.82rem;color:rgba(210,230,255,.8)">'
+            '<div style="background:#ffffff;border:1px solid #dde5f0;'
+            'border-radius:8px;padding:8px 12px;font-size:.82rem;color:#1a2a4a">'
             '<b>🕵️ Full Anonymisation</b><br>'
             'Removes <em>all</em> patient and person identifiers — suitable for sharing with '
             'MDU, insurers, researchers, or any external body where the patient must not be '
@@ -3386,7 +3320,7 @@ with st.sidebar:
         _ff_colours = {"ff_upload": "#4a9eff", "ff_review": "#f0a030", "ff_export": "#3cb86a"}
         _fsc = _ff_colours.get(st.session_state.ff_stage, "#888")
         st.markdown(
-            f'<div style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);'
+            f'<div style="background:#ffffff;border:1px solid #dde5f0;'
             f'border-radius:8px;padding:8px 12px;font-size:.82rem;font-weight:600;'
             f'color:{_fsc}">▶ {_ff_stage_labels.get(st.session_state.ff_stage, "")}</div>',
             unsafe_allow_html=True,
@@ -3812,34 +3746,34 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
     _bar_col  = "#3cb86a" if _all_ready else "#f0a030"
     st.markdown(
         f"""
-        <div style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.10);
+        <div style="background:#ffffff;border:1px solid #dde5f0;
                     border-radius:14px;padding:16px 22px;margin-bottom:16px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-            <span style="color:rgba(195,218,255,.9);font-weight:600;font-size:1rem">
+            <span style="color:#1a3060;font-weight:600;font-size:1rem">
               📋 Review Progress
             </span>
-            <span style="color:rgba(140,180,220,.7);font-size:.85rem">
+            <span style="color:#5a7090;font-size:.85rem">
               Scroll down to review all suggestions
             </span>
           </div>
           <div style="display:flex;gap:32px;margin-bottom:12px">
             <div>
-              <div style="color:rgba(140,180,220,.7);font-size:.75rem;text-transform:uppercase;letter-spacing:.5px">Redactions approved</div>
-              <div style="color:#fff;font-size:1.3rem;font-weight:700">{_n_approved_total} <span style="color:rgba(140,180,220,.55);font-size:.9rem">/ {_total_prop}</span></div>
+              <div style="color:#6a80a0;font-size:.75rem;text-transform:uppercase;letter-spacing:.5px">Redactions approved</div>
+              <div style="color:#0a2040;font-size:1.3rem;font-weight:700">{_n_approved_total} <span style="color:#7a90b0;font-size:.9rem">/ {_total_prop}</span></div>
             </div>
             <div>
-              <div style="color:rgba(140,180,220,.7);font-size:.75rem;text-transform:uppercase;letter-spacing:.5px">Escalations decided</div>
-              <div style="color:#fff;font-size:1.3rem;font-weight:700">{_n_esc_decided} <span style="color:rgba(140,180,220,.55);font-size:.9rem">/ {_total_esc}</span></div>
+              <div style="color:#6a80a0;font-size:.75rem;text-transform:uppercase;letter-spacing:.5px">Escalations decided</div>
+              <div style="color:#0a2040;font-size:1.3rem;font-weight:700">{_n_esc_decided} <span style="color:#7a90b0;font-size:.9rem">/ {_total_esc}</span></div>
             </div>
             <div style="margin-left:auto;display:flex;align-items:center">
-              {"<span style='background:rgba(60,184,106,.18);border:1px solid rgba(60,184,106,.45);border-radius:20px;padding:4px 14px;color:rgba(90,220,130,.9);font-weight:600'>✅ Ready to build</span>" if _all_ready else f"<span style='background:rgba(240,160,48,.14);border:1px solid rgba(240,160,48,.4);border-radius:20px;padding:4px 14px;color:rgba(255,200,80,.9);font-weight:600'>⚠️ {_n_esc_pending} escalation{'s' if _n_esc_pending != 1 else ''} pending</span>"}
+              {"<span style='background:#e6f9ec;border:1px solid #52c271;border-radius:20px;padding:4px 14px;color:#1a7a36;font-weight:600'>✅ Ready to build</span>" if _all_ready else f"<span style='background:#fff8e6;border:1px solid #f0a030;border-radius:20px;padding:4px 14px;color:#8a5a00;font-weight:600'>⚠️ {_n_esc_pending} escalation{'s' if _n_esc_pending != 1 else ''} pending</span>"}
             </div>
           </div>
-          <div style="background:rgba(255,255,255,.08);border-radius:6px;height:14px;overflow:hidden">
+          <div style="background:#e8edf5;border-radius:6px;height:14px;overflow:hidden">
             <div style="width:{_esc_pct}%;height:100%;background:linear-gradient(90deg,{_bar_col},{_bar_col}cc);
                         border-radius:6px;transition:width .4s ease"></div>
           </div>
-          <div style="color:rgba(140,180,220,.6);font-size:.73rem;margin-top:5px;text-align:right">
+          <div style="color:#5a7090;font-size:.73rem;margin-top:5px;text-align:right">
             {"All escalations resolved — click Apply button below to build the bundle" if _all_ready else f"Scroll down · find sections marked 🔴 · make a decision for each escalation"}
           </div>
         </div>
@@ -3853,6 +3787,19 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
         "Escalations (🔴) require a manual decision before the document is released."
     )
     st.divider()
+
+    # ── Build canonical-key map: each unique text gets one master checkbox key ─
+    # The first document/item that introduces a given text (case-insensitive)
+    # becomes the canonical instance.  All later instances share the same
+    # session_state key so ticking one ticks all.
+    _text_canonical: dict[str, tuple[int, int]] = {}   # text_lower → (doc_i, item_j)
+    for _si, _sa in enumerate(_analyses):
+        for _ri, _rr in enumerate(_sa["proposed_redactions"]):
+            _tl = (_rr.get("text") or "").strip().lower()
+            if _tl and _tl not in _text_canonical:
+                _text_canonical[_tl] = (_si, _ri)
+
+    _text_seen_globally: set[str] = set()   # texts already rendered in any document
 
     for i, analysis in enumerate(_analyses):
         fname      = analysis["filename"]
@@ -3999,10 +3946,10 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
                             st.markdown("**🤖 AI reasoning**")
                             if reason:
                                 st.markdown(
-                                    f"<div style='background:rgba(0,94,184,.12);"
-                                    f"border-left:3px solid rgba(0,94,184,.6);"
+                                    f"<div style='background:#e8f0fc;"
+                                    f"border-left:3px solid #005EB8;"
                                     f"border-radius:6px;padding:10px 14px;"
-                                    f"color:rgba(210,232,255,.9);font-size:.88rem'>"
+                                    f"color:#1a2a4a;font-size:.88rem'>"
                                     f"{reason}</div>",
                                     unsafe_allow_html=True,
                                 )
@@ -4096,15 +4043,29 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
 
                 # ── Individual rows — stable session_state keys prevent state loss ──
                 _hdr1, _hdr2, _hdr3, _hdr4 = st.columns([1, 4, 2, 2])
-                _hdr1.markdown("<span style='color:rgba(140,180,220,.6);font-size:.78rem'>APPROVE</span>", unsafe_allow_html=True)
-                _hdr2.markdown("<span style='color:rgba(140,180,220,.6);font-size:.78rem'>TEXT TO REDACT  ·  CATEGORY  ·  REASON</span>", unsafe_allow_html=True)
-                _hdr3.markdown("<span style='color:rgba(140,180,220,.6);font-size:.78rem'>REPLACEMENT LABEL</span>", unsafe_allow_html=True)
-                _hdr4.markdown("<span style='color:rgba(140,180,220,.6);font-size:.78rem'>CONTEXT</span>", unsafe_allow_html=True)
-                st.markdown("<hr style='margin:4px 0 8px;border-color:rgba(255,255,255,.08)'>", unsafe_allow_html=True)
+                _hdr1.markdown("<span style='color:#6a80a0;font-size:.78rem'>APPROVE</span>", unsafe_allow_html=True)
+                _hdr2.markdown("<span style='color:#6a80a0;font-size:.78rem'>TEXT TO REDACT  ·  CATEGORY  ·  REASON</span>", unsafe_allow_html=True)
+                _hdr3.markdown("<span style='color:#6a80a0;font-size:.78rem'>REPLACEMENT LABEL</span>", unsafe_allow_html=True)
+                _hdr4.markdown("<span style='color:#6a80a0;font-size:.78rem'>CONTEXT</span>", unsafe_allow_html=True)
+                st.markdown("<hr style='margin:4px 0 8px;border-color:#dde5f0'>", unsafe_allow_html=True)
 
+                _auto_synced_count = 0
                 for j, r in enumerate(analysis["proposed_redactions"]):
-                    _ak      = f"approve_{i}_{j}"
-                    _rk      = f"repl_{i}_{j}"
+                    _tl = (r.get("text") or "").strip().lower()
+                    _ci, _cj = _text_canonical.get(_tl, (i, j))
+                    # Canonical session_state keys — shared across all duplicate instances
+                    _ak = f"approve_{_ci}_{_cj}"
+                    _rk = f"repl_{_ci}_{_cj}"
+
+                    if _tl in _text_seen_globally:
+                        # Already shown elsewhere — sync state silently, skip rendering
+                        r["approved"]    = st.session_state.get(_ak, True)
+                        r["replacement"] = st.session_state.get(_rk, "[REDACTED]")
+                        _auto_synced_count += 1
+                        continue
+
+                    _text_seen_globally.add(_tl)
+
                     tag_info = REDACTION_TAGS.get(r.get("tag", ""), {})
                     _label   = tag_info.get("label", r.get("tag", ""))
                     _text    = r.get("text", "")
@@ -4123,15 +4084,15 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
                         st.caption("✓ Redact" if approved else "✗ Keep")
                     with c_txt:
                         _txt_style = (
-                            "background:rgba(220,50,50,.15);border-radius:4px;"
-                            "padding:2px 6px;color:rgba(255,160,160,.92);font-family:monospace;font-size:.85rem"
+                            "background:rgba(220,50,50,.10);border-radius:4px;"
+                            "padding:2px 6px;color:#c0001a;font-family:monospace;font-size:.85rem"
                             if approved else
-                            "background:rgba(255,255,255,.06);border-radius:4px;"
-                            "padding:2px 6px;color:rgba(180,200,220,.65);font-family:monospace;font-size:.85rem;text-decoration:none"
+                            "background:#f0f4f8;border-radius:4px;"
+                            "padding:2px 6px;color:#6a80a0;font-family:monospace;font-size:.85rem"
                         )
                         st.markdown(
                             f"<span style='{_txt_style}'>{_text}</span>"
-                            f"<br><span style='color:rgba(120,160,210,.7);font-size:.78rem'>"
+                            f"<br><span style='color:#3a6090;font-size:.78rem'>"
                             f"<b>{_label}</b>"
                             + (f" · {_reason}" if _reason else "")
                             + "</span>",
@@ -4149,8 +4110,14 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
                         if _ctx:
                             st.caption(_ctx)
                     st.markdown(
-                        "<hr style='margin:2px 0 6px;border-color:rgba(255,255,255,.05)'>",
+                        "<hr style='margin:2px 0 6px;border-color:#e8edf5'>",
                         unsafe_allow_html=True,
+                    )
+
+                if _auto_synced_count:
+                    st.caption(
+                        f"ℹ️ {_auto_synced_count} suggestion(s) hidden — identical text already "
+                        f"reviewed above and auto-matched to the same decision."
                     )
 
             # ── Context preview panel ─────────────────────────────────────────
