@@ -3652,7 +3652,7 @@ if tool_mode == "sar" and st.session_state.stage == "upload":
             st.session_state.analyses   = analyses
             # Clear stale approval/replacement/escalation-decision keys
             for _k in list(st.session_state.keys()):
-                if _k.startswith(("approve_", "repl_", "esc_dec_")):
+                if _k.startswith(("approve_", "repl_", "esc_dec_", "page_excl_")):
                     del st.session_state[_k]
             st.session_state.stage      = "review"
             st.session_state.play_sound = "chime"
@@ -4173,6 +4173,43 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
             elif analysis["has_text"] and not analysis["escalations"]:
                 st.success("No redactions proposed. Verify the document manually if needed.")
 
+            # ── Page exclusion ────────────────────────────────────────────────
+            _doc_for_pages = analysis.get("doc")
+            if _doc_for_pages is not None and _doc_for_pages.page_count > 0:
+                st.markdown("#### 🗑️ Remove Whole Pages")
+                st.caption(
+                    "Select pages to delete entirely from the final bundle — e.g. misfiled "
+                    "records, letters about another patient, blank pages."
+                )
+                # Build labels: "Page N — first 90 chars of text"
+                _page_labels = []
+                for _pn in range(_doc_for_pages.page_count):
+                    _pg_txt = _doc_for_pages[_pn].get_text("text")[:90].replace("\n", " ").strip()
+                    _pg_lbl = f"Page {_pn + 1}"
+                    if _pg_txt:
+                        _pg_lbl += f" — {_pg_txt}…"
+                    _page_labels.append(_pg_lbl)
+
+                _excl_sel = st.multiselect(
+                    "Pages to remove:",
+                    options=_page_labels,
+                    key=f"page_excl_{i}",
+                    placeholder="None — all pages will be included",
+                )
+                if _excl_sel:
+                    if len(_excl_sel) == _doc_for_pages.page_count:
+                        st.error(
+                            "⚠️ All pages selected for removal — this document will be "
+                            "excluded entirely from the bundle."
+                        )
+                    else:
+                        st.warning(
+                            f"🗑️ {len(_excl_sel)} page(s) will be removed: "
+                            + ", ".join(
+                                lbl.split(" — ")[0] for lbl in _excl_sel
+                            )
+                        )
+
     # ── Apply button ──────────────────────────────────────────────────────────
     st.divider()
     _approved_final = sum(
@@ -4200,6 +4237,25 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
             status.markdown(f"✏️ Applying redactions to **{analysis['filename']}**…")
             approved = [r for r in analysis["proposed_redactions"] if r.get("approved", True)]
             doc, cnt = apply_approved_redactions(analysis["doc"], approved)
+
+            # ── Remove any pages the reviewer marked for deletion ─────────────
+            _excl_labels = st.session_state.get(f"page_excl_{i}", [])
+            if _excl_labels:
+                # Parse "Page N — ..." → zero-based index; delete in reverse to preserve indices
+                _excl_nums = sorted(
+                    [int(lbl.split(" — ")[0].replace("Page ", "").strip()) - 1
+                     for lbl in _excl_labels],
+                    reverse=True,
+                )
+                for _pn in _excl_nums:
+                    if 0 <= _pn < doc.page_count:
+                        doc.delete_page(_pn)
+                cnt += len(_excl_labels)   # count deleted pages as redaction events
+
+            # Skip document if all pages were removed
+            if doc.page_count == 0:
+                continue
+
             proc.append({
                 "filename":        analysis["filename"],
                 "section":         analysis["section"],
