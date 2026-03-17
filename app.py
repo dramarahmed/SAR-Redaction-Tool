@@ -4314,7 +4314,7 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
         # Include patient name in filename so the output is clearly identified.
         # Use the entered patient name; fall back to auto-detection from the first file.
         _fname_patient = patient_name.strip()
-        if not _fname_patient and analyses:
+        if not _fname_patient and _analyses:
             _first_fname = analyses[0].get("filename", "")
             _first_text  = analyses[0].get("text", "")
             _fname_patient = _detect_patient_name(_first_fname, _first_text)
