@@ -1090,7 +1090,9 @@ For each identifier found, output one JSON entry with:
 
 CATEGORIES:
   PATIENT_NAME    → [PATIENT NAME]   (patient full name, surname, first name, initials)
-  PATIENT_DOB     → [DATE OF BIRTH]  (patient date of birth)
+  PATIENT_DOB     → [DATE OF BIRTH]  (patient date of birth — use the COMPLETE date
+                    string as it appears, e.g. "15 Oct 1985" or "15/10/1985";
+                    NEVER flag a month name alone, a year alone, or a day number alone)
   PATIENT_NHS     → [NHS NUMBER]     (NHS number)
   PATIENT_ADDRESS → [ADDRESS]        (home address, street, town — postcodes caught separately)
   PATIENT_PHONE   → [PHONE NUMBER]
@@ -1102,8 +1104,10 @@ CATEGORIES:
 ALWAYS flag: every patient name, DOB, NHS number, address, every other person's full name or
 identifiable initials (e.g. "Dr A. Brown", "J. Smith"), any personal phone/email.
 
-NEVER flag: organisation names, job titles alone, clinical content, consultation dates,
-generic place names (cities, hospitals without a personal name).
+NEVER flag: organisation names, job titles alone, clinical content, consultation dates
+(appointment dates, prescription dates, referral dates — these are clinical context, NOT
+identifiers), generic place names (cities, hospitals without a personal name), month names
+alone (e.g. "October", "Oct"), year numbers alone (e.g. "1985"), or single day numbers.
 
 Return ONLY valid JSON — no prose, no markdown:
 {{
@@ -1340,6 +1344,37 @@ def anonymise_document(text: str, model: str, status_cb=None) -> tuple:
             seen.add(key)
             dedup.append(r)
 
+    # ── Filter: reject overly-broad single-token proposals ───────────────────
+    # A model sometimes extracts just "Oct" from "15 Oct 1985", or "1985" alone.
+    # Applying those would clobber unrelated text (e.g. "doctor", "since 1985").
+    _MONTH_ONLY_RE = re.compile(
+        r'^(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|'
+        r'Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)$',
+        re.IGNORECASE,
+    )
+    _YEAR_ONLY_RE  = re.compile(r'^\d{4}$')
+    _DAY_ONLY_RE   = re.compile(r'^\d{1,2}(?:st|nd|rd|th)?$', re.IGNORECASE)
+    dedup = [
+        r for r in dedup
+        if not _MONTH_ONLY_RE.match((r.get("text") or "").strip())
+        and not _YEAR_ONLY_RE.match((r.get("text") or "").strip())
+        and not _DAY_ONLY_RE.match((r.get("text") or "").strip())
+    ]
+
+    def _word_boundary_sub(original: str, replacement: str, text: str) -> str:
+        """Replace `original` in `text` using word boundaries where applicable.
+
+        Adding \\b prevents 'Oct' matching inside 'doctor', 'Sep' inside
+        'September' already matched by a longer entry, etc.
+        Only adds \\b at the side where `original` starts/ends with a word char.
+        """
+        esc = re.escape(original)
+        if original[:1:] and (original[0].isalnum() or original[0] == '_'):
+            esc = r'\b' + esc
+        if original[-1:] and (original[-1].isalnum() or original[-1] == '_'):
+            esc = esc + r'\b'
+        return re.sub(esc, replacement, text, flags=re.IGNORECASE)
+
     # Apply redactions — longest first to avoid partial matches
     result = text
     dedup.sort(key=lambda r: len(r.get("text") or ""), reverse=True)
@@ -1349,7 +1384,7 @@ def anonymise_document(text: str, model: str, status_cb=None) -> tuple:
         replacement = r.get("replacement") or "[ANONYMISED]"
         if not original:
             continue
-        new_result = re.sub(re.escape(original), replacement, result, flags=re.IGNORECASE)
+        new_result = _word_boundary_sub(original, replacement, result)
         if new_result != result:
             count += 1
         result = new_result
@@ -1432,9 +1467,7 @@ def anonymise_document(text: str, model: str, status_cb=None) -> tuple:
                     replacement = item.get("replacement") or "[NAME]"
                     if not original or "[" in original:   # skip placeholders
                         continue
-                    new_result = re.sub(
-                        re.escape(original), replacement, result, flags=re.IGNORECASE
-                    )
+                    new_result = _word_boundary_sub(original, replacement, result)
                     if new_result != result:
                         count += 1
                     result = new_result
