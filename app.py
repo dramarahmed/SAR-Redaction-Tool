@@ -820,6 +820,11 @@ Apply UK GDPR / DPA 2018 / ICO guidance and the BMA guidance on access to health
   NOTE: only the patient's OWN DOB is protected. Any date of birth that differs from
   the patient's DOB and belongs to a third party (e.g. a perpetrator, next of kin,
   or misfiled patient) MUST be flagged as THIRD_PARTY_IDENTIFIER or OTHER_PATIENT_DATA.
+• Clinical process words used alone — these describe clinical activities and are NOT
+  personal identifiers. NEVER flag words such as: prescription, referral, consultation,
+  appointment, medication, dosage, treatment, examination, assessment, admission,
+  discharge, procedure, operation, review, follow-up, blood test, scan, result.
+  Only flag the PERSONAL DATA around them (e.g. a third party's name, their DOB).
 • Routine clinical opinion — clinical opinions, assessments and judgements recorded about
   the patient are the patient's own data. Do NOT escalate them unless they meet the
   specific "SENSITIVE_CLINICAL_OPINION" criteria below.
@@ -1806,6 +1811,85 @@ def llm_analyse_document(
     all_proposed = _expand_name_redactions(all_proposed, text, patient_name)
     all_proposed = _expand_agency_contacts(all_proposed, text, patient_name)
     all_proposed = _expand_agency_professionals(all_proposed, text, patient_name)
+
+    # ── Post-processing: clinical vocabulary safelist ─────────────────────────
+    # Remove any proposal whose ENTIRE text is a common clinical process word.
+    # These describe clinical activities, not personal identifiers, and should
+    # never be redacted regardless of what the LLM returns.
+    _CLINICAL_NEVER_REDACT = {
+        "prescription", "prescriptions", "repeat prescription",
+        "repeat prescriptions", "prescription note", "prescription request",
+        "medication", "medications", "medicine", "medicines",
+        "diagnosis", "diagnoses", "clinical diagnosis",
+        "treatment", "treatments", "treatment plan",
+        "referral", "referrals", "e-referral", "onward referral",
+        "consultation", "consultations",
+        "appointment", "appointments",
+        "examination", "examinations",
+        "assessment", "assessments",
+        "investigation", "investigations",
+        "review", "reviews", "medication review",
+        "admission", "admissions", "discharge", "discharges",
+        "tablet", "tablets", "capsule", "capsules",
+        "injection", "injections", "dose", "dosage",
+        "inhaler", "inhalers", "cream", "ointment", "spray",
+        "blood test", "blood tests",
+        "scan", "x-ray", "xray", "mri", "ct scan", "ultrasound",
+        "operation", "procedure", "procedures", "surgery",
+        "follow up", "follow-up", "outpatient", "inpatient",
+        "clinic", "ward", "unit",
+        "blood pressure", "bp", "heart rate", "pulse",
+        "weight", "height", "bmi",
+        "cholesterol", "glucose", "hba1c",
+        "test results", "results",
+    }
+    all_proposed = [
+        p for p in all_proposed
+        if (p.get("text") or "").strip().lower() not in _CLINICAL_NEVER_REDACT
+    ]
+
+    # ── Post-processing: deterministic safeguarding keyword scanner ───────────
+    # The LLM can miss safeguarding content when it is incidentally mentioned
+    # or buried in long text. This scanner provides a guaranteed safety net:
+    # any recognised safeguarding keyword triggers a SAFEGUARDING_RISK escalation
+    # regardless of what the LLM returned, so the reviewer is always alerted.
+    _SG_SCAN_RE = re.compile(
+        r'\b(?:'
+        r'safeguarding|safe\s*guarding|'
+        r'MARAC|MASH\b|IDVA|IDASA|DASH\b|LADO\b|SOVA\b|PREVENT\b|'
+        r'child\s+protection(?:\s+(?:plan|conference|register|referral))?|'
+        r'CP\s+(?:plan|conf(?:erence)?|register)|'
+        r'section\s+(?:17|47)|s\s*\.?\s*4[57]\b|'
+        r'LAC\b|CIN\b|CAF\b|early\s+help|'
+        r'domestic\s+(?:abuse|violence)|'
+        r'adult\s+safeguarding|MAPPA\b|PPANI\b|'
+        r'FGM\b|forced\s+marriage|honour.based\s+(?:abuse|violence)|'
+        r'non.accidental\s+(?:injury|harm)|NAI\b|'
+        r'vulnerable\s+(?:adult|child(?:ren)?)|'
+        r'child(?:ren)?\s+in\s+need|'
+        r'at.risk\s+register|risk\s+of\s+significant\s+harm|'
+        r'social\s+care\s+(?:plan|referral|assessment)|'
+        r'multi.agency\s+(?:risk|safeguarding|meeting)|'
+        r'referral\s+to\s+(?:social\s+care|children(?:\'?s)?\s+services|adult\s+services)'
+        r')',
+        re.IGNORECASE,
+    )
+    _existing_esc_lower = {(e.get("text") or "").strip().lower() for e in all_escalations}
+    for _sg_m in _SG_SCAN_RE.finditer(text):
+        _sg_kw = _sg_m.group(0).strip()
+        if _sg_kw.lower() in _existing_esc_lower:
+            continue
+        _sg_ctx = text[max(0, _sg_m.start() - 150): min(len(text), _sg_m.end() + 150)]
+        all_escalations.append({
+            "text":    _sg_kw,
+            "tag":     "SAFEGUARDING_RISK",
+            "reason":  (
+                f"Safeguarding keyword '{_sg_kw}' detected by automatic scan — "
+                "requires clinical/IG review before release"
+            ),
+            "context": _sg_ctx,
+        })
+        _existing_esc_lower.add(_sg_kw.lower())
 
     return {
         "proposed_redactions": all_proposed,
