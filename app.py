@@ -4183,6 +4183,7 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
     _vk_to_canonical = {}             # variant-key  → (canon_si, canon_ri)
     _tl_to_canonical = {}             # text_lower   → (canon_si, canon_ri)  [exact fallback]
     _vk_to_docs = {}                  # variant-key  → [filename, ...]
+    _tl_to_docs  = {}                 # text_lower   → [filename, ...] (for rendering loop)
 
     for _si, _sa in enumerate(_analyses):
         for _ri, _rr in enumerate(_sa["proposed_redactions"]):
@@ -4195,12 +4196,15 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
                 _unique_items_ordered.append((_tl, _si, _ri, _rr))
                 _vk_to_canonical[_vk] = (_si, _ri)
                 _tl_to_canonical[_tl] = (_si, _ri)
-                _vk_to_docs[_vk] = [_sa["filename"]]
+                _vk_to_docs[_vk]  = [_sa["filename"]]
+                _tl_to_docs[_tl]  = _vk_to_docs[_vk]   # same list object
             else:
                 # Variant of an already-seen identifier → point to same canonical
                 _tl_to_canonical[_tl] = _vk_to_canonical[_vk]
                 if _sa["filename"] not in _vk_to_docs[_vk]:
                     _vk_to_docs[_vk].append(_sa["filename"])
+                # Also make this exact text point to the same doc list
+                _tl_to_docs[_tl] = _vk_to_docs[_vk]
 
     # Init session_state for CANONICAL instances only
     for _tl, _csi, _cri, _crr in _unique_items_ordered:
