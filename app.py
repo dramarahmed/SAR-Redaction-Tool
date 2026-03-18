@@ -1488,6 +1488,9 @@ def llm_analyse_document(
     status_cb=None,
     extra_redactions: str = "",
     custom_instructions: str = "",
+    patient_dob: str = "",
+    patient_nhs: str = "",
+    patient_address: str = "",
 ) -> tuple:
     """
     Analyse document text for SAR redactions.
@@ -1498,11 +1501,23 @@ def llm_analyse_document(
     extra_redactions:    newline/comma-separated extra terms to always redact this session.
     custom_instructions: free-text extra prompt instructions appended this session.
     """
-    patient_line = ""
+    # Build patient_line — tells the LLM the confirmed patient details so it
+    # never accidentally redacts the patient's own data.
+    _pdet_parts = []
     if patient_name.strip():
+        _pdet_parts.append(f"name: {patient_name.strip()}")
+    if patient_dob.strip():
+        _pdet_parts.append(f"date of birth: {patient_dob.strip()}")
+    if patient_nhs.strip():
+        _pdet_parts.append(f"NHS number: {patient_nhs.strip()}")
+    if patient_address.strip():
+        _pdet_parts.append(f"address: {patient_address.strip()}")
+    patient_line = ""
+    if _pdet_parts:
         patient_line = (
-            f"- The patient is {patient_name.strip()} — "
-            "NEVER flag this person's own name or identifiers for redaction\n"
+            f"- The patient's own confirmed details are — {'; '.join(_pdet_parts)}.\n"
+            "  NEVER flag ANY of these details, or any part of them, for redaction.\n"
+            "  They are the patient's own personal data and MUST be disclosed.\n"
         )
 
     # Build session-specific addendum
@@ -1812,6 +1827,36 @@ def llm_analyse_document(
     all_proposed = _expand_agency_contacts(all_proposed, text, patient_name)
     all_proposed = _expand_agency_professionals(all_proposed, text, patient_name)
 
+    # ── Post-processing: confirmed patient details guard ─────────────────────
+    # Remove any proposal whose text matches a confirmed patient detail (name
+    # tokens, DOB string, NHS number, or address fragment).  This is the final
+    # safety net against the LLM accidentally flagging the patient's own data.
+    _protected_exact   = set()   # exact-match strings (lower)
+    _protected_tokens  = set()   # individual tokens that must not be sole-redacted
+    for _pv in (patient_name, patient_dob, patient_nhs, patient_address):
+        _pv = (_pv or "").strip()
+        if _pv:
+            _protected_exact.add(_pv.lower())
+            # Also protect each space-separated token of length >= 3
+            for _tok in _pv.split():
+                if len(_tok) >= 3:
+                    _protected_tokens.add(_tok.lower().strip(".,;:"))
+    if _protected_exact or _protected_tokens:
+        _pat_nhs_digits = re.sub(r"\D", "", patient_nhs)  # digits only for loose match
+        def _is_patient_own(item):
+            _t = (item.get("text") or "").strip()
+            _tl = _t.lower()
+            if _tl in _protected_exact:
+                return True
+            # NHS number: compare digits only
+            if _pat_nhs_digits and re.sub(r"\D", "", _t) == _pat_nhs_digits:
+                return True
+            # Short single-token match (e.g. patient first name proposed alone)
+            if _tl in _protected_tokens and len(_t.split()) == 1:
+                return True
+            return False
+        all_proposed = [p for p in all_proposed if not _is_patient_own(p)]
+
     # ── Post-processing: clinical vocabulary safelist ─────────────────────────
     # Remove any proposal whose ENTIRE text is a common clinical process word.
     # These describe clinical activities, not personal identifiers, and should
@@ -1898,6 +1943,68 @@ def llm_analyse_document(
         "chunks_analysed":     len(chunks),
         "chars_total":         len(text),
     }, f"\n\n--- CHUNK BREAK ---\n\n".join(all_raw)
+
+
+def _detect_patient_details(texts: list, model: str) -> dict:
+    """
+    Ask the LLM to extract the patient's own demographics from a sample of
+    document text.  Returns a dict with keys:
+      name, dob, nhs_number, address  (all str, empty string if not found).
+    Uses the first 1 500 chars of each of up to five documents.
+    """
+    sample = "\n\n---NEXT DOCUMENT---\n\n".join(
+        t[:1500] for t in texts[:5] if (t or "").strip()
+    )
+    if not sample.strip():
+        return {}
+
+    prompt = (
+        "You are reading NHS medical records from a Subject Access Request bundle.\n"
+        "Extract the PATIENT'S OWN personal details from the document text below.\n"
+        "Return ONLY a JSON object — no explanation, no markdown.\n"
+        "If a detail is not present use an empty string.\n\n"
+        '{"name":"patient full name","dob":"date of birth exactly as written",'
+        '"nhs_number":"NHS number exactly as written (e.g. 485 777 3456)",'
+        '"address":"patient home address (full address or first line)"}\n\n'
+        "Rules:\n"
+        "- Extract the PATIENT's details, not a clinician, not a family member.\n"
+        "- Look for labels: Name:, Patient:, DOB:, Date of Birth:, NHS No:, "
+        "NHS Number:, Address:, Home Address:.\n"
+        "- If the same person's name appears repeatedly in correspondence headers "
+        "they are most likely the patient.\n\n"
+        f"Document text:\n---\n{sample}\n---\n\nReturn JSON only."
+    )
+    try:
+        ex     = ThreadPoolExecutor(max_workers=1)
+        future = ex.submit(
+            ollama.chat,
+            model=model,
+            messages=[
+                {"role": "system",
+                 "content": "Extract structured data from medical documents. Return valid JSON only."},
+                {"role": "user", "content": prompt},
+            ],
+            format="json",
+            options={"temperature": 0, "num_predict": 300},
+        )
+        try:
+            resp = future.result(timeout=60)
+        except FuturesTimeoutError:
+            return {}
+        finally:
+            ex.shutdown(wait=False)
+        raw    = resp["message"]["content"].strip()
+        parsed = _extract_json(raw)
+        if isinstance(parsed, dict):
+            return {
+                "name":       str(parsed.get("name",       "") or "").strip(),
+                "dob":        str(parsed.get("dob",        "") or "").strip(),
+                "nhs_number": str(parsed.get("nhs_number", "") or "").strip(),
+                "address":    str(parsed.get("address",    "") or "").strip(),
+            }
+    except Exception:
+        pass
+    return {}
 
 
 def classify_document(text: str, model: str) -> str:
@@ -3191,7 +3298,13 @@ for _k, _v in [
     ("bundle_fname",  "SAR_REDACTED_BUNDLE.pdf"),
     ("proc_summary",  []),
     ("play_sound",    None),
-    ("sar_input_ver", 0),   # incremented by _reset() to wipe sidebar form fields
+    ("sar_input_ver",    0),   # incremented by _reset() to wipe sidebar form fields
+    # ── Detected patient demographics (auto-filled or manually entered) ───────
+    ("pat_det_name",    ""),
+    ("pat_det_dob",     ""),
+    ("pat_det_nhs",     ""),
+    ("pat_det_address", ""),
+    ("pat_det_done",    False),  # True once detection has been run
     # ── Form filler ──────────────────────────────────────────────────────────
     ("tool_mode",         "sar"),        # "sar" | "form_filler" | "anon"
     ("ff_stage",          "ff_upload"),  # "ff_upload" | "ff_review" | "ff_export"
@@ -3228,6 +3341,9 @@ def _reset():
     # Increment version counter → all sidebar inputs with key=f"..._{sar_input_ver}"
     # become new widgets and default back to empty/None on the next rerun.
     st.session_state.sar_input_ver = st.session_state.get("sar_input_ver", 0) + 1
+    # Clear detected patient demographics
+    for _dk in ("pat_det_name", "pat_det_dob", "pat_det_nhs", "pat_det_address", "pat_det_done"):
+        st.session_state[_dk] = "" if _dk != "pat_det_done" else False
 
 
 def _reset_ff():
@@ -3582,22 +3698,120 @@ if tool_mode == "sar" and st.session_state.stage == "upload":
             _summary.append(f"{_zip_count} ZIP(s) will be extracted")
         st.info("**Ready:** " + "  ·  ".join(_summary))
 
-        _pname_missing = not patient_name.strip()
+        # ── Patient details detection panel ───────────────────────────────────
+        st.divider()
+        st.markdown("#### 👤 Step 1: Confirm Patient Details")
+        st.caption(
+            "These details will be **protected from redaction** across every document in the bundle. "
+            "Click **Auto-detect** to extract them from the documents, then confirm or correct."
+        )
+
+        _sv2 = st.session_state.sar_input_ver   # version key for versioned inputs
+        _det_c1, _det_c2 = st.columns([3, 1])
+        with _det_c2:
+            st.markdown("&nbsp;")   # vertical alignment spacer
+            if st.button("🔍 Auto-detect", use_container_width=True,
+                         help="Scan the first few pages of the uploaded documents to detect patient details automatically"):
+                _sample_files = _collect_all_files(
+                    st.session_state.get(f"sar_uploader_{_sv2}") or [],
+                    folder_path_input,
+                )[:5]
+                _det_texts = []
+                for _sf in _sample_files:
+                    if getattr(_sf, "_zip_error", None):
+                        continue
+                    _, _dt, _, _ = ingest_file(_sf)
+                    if (_dt or "").strip():
+                        _det_texts.append(_dt)
+                if _det_texts:
+                    with st.spinner("🔍 Detecting patient details from documents…"):
+                        _det = _detect_patient_details(_det_texts, selected_model)
+                    if _det.get("name"):
+                        st.session_state.pat_det_name    = _det.get("name",       "")
+                        st.session_state.pat_det_dob     = _det.get("dob",        "")
+                        st.session_state.pat_det_nhs     = _det.get("nhs_number", "")
+                        st.session_state.pat_det_address = _det.get("address",    "")
+                        st.session_state.pat_det_done    = True
+                        st.rerun()
+                    else:
+                        st.warning("Could not detect patient details automatically. "
+                                   "Please fill in the fields manually.")
+                else:
+                    st.warning("No readable document text found. Upload files first.")
+
+        with _det_c1:
+            _pdn = st.text_input(
+                "Patient name",
+                value=st.session_state.pat_det_name,
+                key=f"pat_det_name_input_{_sv2}",
+                placeholder="e.g. John Smith",
+            )
+            st.session_state.pat_det_name = _pdn
+
+        _dc1, _dc2 = st.columns(2)
+        with _dc1:
+            _pdd = st.text_input(
+                "Date of birth",
+                value=st.session_state.pat_det_dob,
+                key=f"pat_det_dob_input_{_sv2}",
+                placeholder="e.g. 12/05/1975",
+            )
+            st.session_state.pat_det_dob = _pdd
+
+            _pdn2 = st.text_input(
+                "NHS number",
+                value=st.session_state.pat_det_nhs,
+                key=f"pat_det_nhs_input_{_sv2}",
+                placeholder="e.g. 485 777 3456",
+            )
+            st.session_state.pat_det_nhs = _pdn2
+
+        with _dc2:
+            _pda = st.text_area(
+                "Home address",
+                value=st.session_state.pat_det_address,
+                key=f"pat_det_addr_input_{_sv2}",
+                height=100,
+                placeholder="e.g. 12 High Street\nManchester\nM1 2AB",
+            )
+            st.session_state.pat_det_address = _pda
+
+        # Confirmation banner — shown once any detail is filled
+        _eff_name = (st.session_state.pat_det_name or patient_name or "").strip()
+        _eff_dob  = st.session_state.pat_det_dob.strip()
+        _eff_nhs  = st.session_state.pat_det_nhs.strip()
+        _eff_addr = st.session_state.pat_det_address.strip()
+
+        if _eff_name or _eff_dob or _eff_nhs or _eff_addr:
+            _shield_parts = []
+            if _eff_name: _shield_parts.append(f"**Name:** {_eff_name}")
+            if _eff_dob:  _shield_parts.append(f"**DOB:** {_eff_dob}")
+            if _eff_nhs:  _shield_parts.append(f"**NHS No:** {_eff_nhs}")
+            if _eff_addr: _shield_parts.append(f"**Address:** {_eff_addr.splitlines()[0]}")
+            st.success(
+                "🛡️ **Protected from redaction across all documents:**  \n"
+                + "  ·  ".join(_shield_parts)
+            )
+
+        st.divider()
+
+        # Require at least a name before allowing analysis to proceed
+        _pname_missing = not _eff_name
         if _pname_missing:
             st.error(
                 "⚠️ **Patient name is required before analysis can begin.** "
-                "Without it the tool cannot reliably distinguish the patient's own data from "
-                "third-party data — the patient's surname will be redacted wherever a family "
-                "member shares it. Enter the patient's full name in "
-                "**SAR Details → Patient full name** in the sidebar."
+                "Click **Auto-detect** above, or enter the name manually in the Patient name field."
             )
 
         if st.button(
-            "Analyse Documents",
+            "▶ Analyse Documents",
             type="primary",
             use_container_width=True,
             disabled=_pname_missing,
         ):
+            # Carry effective name forward: detected field takes precedence over sidebar
+            if _eff_name and not patient_name.strip():
+                patient_name = _eff_name
             # Show UI immediately so the user knows something is happening
             prog   = st.progress(0.0, text="⏳ Preparing files…")
             status = st.empty()
@@ -3691,7 +3905,11 @@ if tool_mode == "sar" and st.session_state.stage == "upload":
                     # Use the operator-entered name if available; otherwise try to
                     # auto-detect it from the filename or document header so the LLM
                     # and name-expansion filter know whose data must NOT be redacted.
-                    effective_pname = patient_name.strip()
+                    # Priority: sidebar name → detected name → filename/header heuristic
+                    effective_pname = (
+                        patient_name.strip()
+                        or st.session_state.get("pat_det_name", "").strip()
+                    )
                     if not effective_pname:
                         effective_pname = _detect_patient_name(ufile.name, text)
                         if effective_pname:
@@ -3715,6 +3933,9 @@ if tool_mode == "sar" and st.session_state.stage == "upload":
                         status_cb=lambda msg: status.markdown(f"🤖 **`{ufile.name}`** — {msg}"),
                         extra_redactions=extra_terms,
                         custom_instructions=custom_instructions,
+                        patient_dob     = st.session_state.get("pat_det_dob",     ""),
+                        patient_nhs     = st.session_state.get("pat_det_nhs",     ""),
+                        patient_address = st.session_state.get("pat_det_address", ""),
                     )
                     llm_parse_ok    = result.get("parse_ok", False)
                     raw_prop        = result.get("proposed_redactions", [])
