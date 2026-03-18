@@ -833,7 +833,12 @@ Apply UK GDPR / DPA 2018 / ICO guidance and the BMA guidance on access to health
   Exception: escalate as CLINICIAN_CONTEXT_AMBIGUOUS if the clinician is named as a
   patient, as the complainant/subject of a complaint, or in a context where their personal
   data (not their professional act) is being recorded.
-• NHS Trust, hospital, GP practice, clinic or department names.
+• NHS Trust, hospital, GP practice, clinic or department names, and their postal
+  addresses — a clinic's building address in a letterhead is NOT personal data.
+• Clinician and healthcare staff contact details at their place of work that are
+  publicly listed (e.g. a GP surgery's main phone number, a ward switchboard
+  number, a generic admin email). DO redact a clinician's personal direct-dial
+  number or personal email address if it is clearly individual rather than shared.
 • Standard appointment dates, referral acknowledgements, administrative notices.
 • Job titles and role descriptions alone (e.g. "SEN coordinator", "class teacher",
   "key worker", "social worker", "named nurse", "care coordinator") — these are NOT
@@ -1671,7 +1676,11 @@ def llm_analyse_document(
     #   (b) Leading "Dr"/"Prof" prefix within 8 chars BEFORE each occurrence.
     #   (c) Trailing ", Consultant [Specialty]" or similar title within 60
     #       chars AFTER each occurrence (e.g. "Frank Miller, Consultant Optometrist").
-    _CLINICIAN_TITLE_RE = re.compile(r'\b(?:Dr|Prof(?:essor)?)\s+', re.IGNORECASE)
+    _CLINICIAN_TITLE_RE = re.compile(
+        r'\b(?:Dr|Prof(?:essor)?|Sister|Staff\s+Nurse|Nurse|HCA|Midwife|Paramedic|'
+        r'Physio(?:therapist)?|Pharmacist|Optometrist|Radiographer|OT)\s+',
+        re.IGNORECASE,
+    )
     _CLINICIAN_NAME_START_RE = re.compile(r'^(?:Dr|Prof(?:essor)?)\b', re.IGNORECASE)
     _CLINICIAN_TRAILING_RE = re.compile(
         r',?\s*(?:Consultant|Senior\s+Consultant|Lead\s+Consultant|'
@@ -1703,7 +1712,7 @@ def llm_analyse_document(
                 ))
                 # Guards (b) & (c): context around every occurrence
                 if occurrences and all(
-                    _CLINICIAN_TITLE_RE.search(text[max(0, m.start() - 8): m.start()])
+                    _CLINICIAN_TITLE_RE.search(text[max(0, m.start() - 22): m.start()])
                     or _CLINICIAN_TRAILING_RE.match(text[m.end(): m.end() + 60])
                     for m in occurrences
                 ):
@@ -1759,9 +1768,41 @@ def llm_analyse_document(
             return any(w in _INST_FILTER_WORDS for w in words)
         return sum(1 for w in words if w in _INST_FILTER_WORDS) >= 2
 
+    # Also remove addresses that appear to belong to a clinic/hospital
+    # (e.g. a GP surgery letterhead address rather than someone's home).
+    _ADDR_WORDS = {
+        "road", "street", "avenue", "lane", "drive", "close", "way", "place",
+        "court", "grove", "terrace", "crescent", "square", "buildings",
+        "house", "centre", "center", "walk", "gardens", "yard",
+    }
+    _ORG_CONTEXT_WORDS = {
+        "trust", "nhs", "hospital", "surgery", "clinic", "practice",
+        "infirmary", "royal", "health", "medical", "centre", "center",
+        "pharmacy", "dispensary", "ward", "unit",
+    }
+
+    def _looks_clinic_address(t: str) -> bool:
+        """Return True if t looks like a clinic/hospital address (not personal)."""
+        words = set(re.sub(r'[^\w\s]', ' ', t.lower()).split())
+        if not any(w in _ADDR_WORDS for w in words):
+            return False
+        # Check for postcode-like suffix (crude but effective)
+        has_postcode = bool(re.search(
+            r'\b[A-Z]{1,2}\d{1,2}[A-Z]?\s*\d[A-Z]{2}\b', t, re.IGNORECASE
+        ))
+        if has_postcode:
+            # Look for org context near this address in the document text
+            addr_start = text.lower().find(t.lower()[:25])
+            if addr_start != -1:
+                ctx = text[max(0, addr_start - 300): addr_start + 300].lower()
+                if any(w in ctx for w in _ORG_CONTEXT_WORDS):
+                    return True
+        return False
+
     all_proposed = [
         p for p in all_proposed
         if not _looks_institutional(p.get("text", ""))
+        and not _looks_clinic_address(p.get("text", ""))
     ]
 
     # ── Guardian name filter ─────────────────────────────────────────────────
@@ -1943,6 +1984,78 @@ def llm_analyse_document(
         "chunks_analysed":     len(chunks),
         "chars_total":         len(text),
     }, f"\n\n--- CHUNK BREAK ---\n\n".join(all_raw)
+
+
+# ── Variant-normalisation for dedup ──────────────────────────────────────────
+_DEDUP_TITLE_RE = re.compile(
+    r'\b(?:Mr|Mrs|Ms|Miss|Dr|Prof(?:essor)?|Rev|Sir|Lord|Lady|Mx|Cllr|Councillor)\b\.?',
+    re.IGNORECASE,
+)
+_DEDUP_MONTH_MAP = {
+    'january':'01','february':'02','march':'03','april':'04','may':'05','june':'06',
+    'july':'07','august':'08','september':'09','october':'10','november':'11','december':'12',
+    'jan':'01','feb':'02','mar':'03','apr':'04','jun':'06','jul':'07',
+    'aug':'08','sep':'09','oct':'10','nov':'11','dec':'12',
+}
+
+def _normalise_date_str(text: str):
+    """Try to parse text as a date; return canonical DDMMYYYY string or None."""
+    t = text.lower().strip()
+    m = re.match(r'^(\d{1,2})[/\-\. ](\d{1,2})[/\-\. ](\d{2,4})$', t)
+    if m:
+        d, mo, y = m.groups()
+        if len(y) == 2:
+            y = ('19' if int(y) > 30 else '20') + y
+        try:
+            return f"{int(d):02d}{int(mo):02d}{y}"
+        except ValueError:
+            return None
+    m = re.match(r'^(\d{1,2})\s+([a-z]{3,9})\s+(\d{2,4})$', t)
+    if not m:
+        m = re.match(r'^([a-z]{3,9})\s+(\d{1,2})\s+(\d{2,4})$', t)
+        if m:
+            mo_s, d_s, y_s = m.group(1), m.group(2), m.group(3)
+        else:
+            return None
+    else:
+        d_s, mo_s, y_s = m.group(1), m.group(2), m.group(3)
+    mo_num = _DEDUP_MONTH_MAP.get(mo_s[:3].lower())
+    if not mo_num:
+        return None
+    if len(y_s) == 2:
+        y_s = ('19' if int(y_s) > 30 else '20') + y_s
+    try:
+        return f"{int(d_s):02d}{mo_num}{y_s}"
+    except ValueError:
+        return None
+
+
+def _normalise_for_dedup(text: str) -> str:
+    """
+    Return a canonical fingerprint for grouping variant forms of the same
+    identifier together in the review deduplication.
+
+    - Date strings → DDMMYYYY (so "15/05/1975" == "15 May 1975")
+    - Names → strip titles, strip punctuation, sort tokens, lowercase
+      (so "Mr John Smith" == "Smith, John" == "John Smith")
+    - NHS-number-like strings → digits only
+    """
+    t = (text or "").strip()
+    if not t:
+        return ""
+    # Date variant
+    dt = _normalise_date_str(t)
+    if dt:
+        return "DATE:" + dt
+    # NHS number (10 digits) → digits only
+    digits = re.sub(r'\D', '', t)
+    if len(digits) == 10:
+        return "NHS:" + digits
+    # Name / phrase — strip titles and punctuation, sort tokens
+    stripped = _DEDUP_TITLE_RE.sub('', t)
+    stripped = re.sub(r'[^\w\s]', ' ', stripped)
+    tokens = sorted(tok for tok in stripped.lower().split() if len(tok) >= 2)
+    return 'NAME:' + ' '.join(tokens) if tokens else t.lower()
 
 
 def _detect_patient_details(texts: list, model: str) -> dict:
@@ -4062,22 +4175,32 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
     }
 
     # ── Phase 1 — Build canonical maps (runs every rerender, before any UI) ──
+    # Uses _normalise_for_dedup() so that variant forms of the same identifier
+    # (e.g. "John Smith" / "Mr John Smith" / "Smith, John", or "15/05/1975" /
+    # "15 May 1975") are treated as a single item and only shown once.
 
     _unique_items_ordered = []        # [(text_lower, canon_si, canon_ri, rr_dict)]
-    _tl_to_canonical = {}             # text_lower → (canon_si, canon_ri)
-    _tl_to_docs = {}                  # text_lower → [filename, ...]
+    _vk_to_canonical = {}             # variant-key  → (canon_si, canon_ri)
+    _tl_to_canonical = {}             # text_lower   → (canon_si, canon_ri)  [exact fallback]
+    _vk_to_docs = {}                  # variant-key  → [filename, ...]
 
     for _si, _sa in enumerate(_analyses):
         for _ri, _rr in enumerate(_sa["proposed_redactions"]):
-            _tl = (_rr.get("text") or "").strip().lower()
-            if not _tl:
+            _raw = (_rr.get("text") or "").strip()
+            _tl  = _raw.lower()
+            _vk  = _normalise_for_dedup(_raw)
+            if not _vk:
                 continue
-            if _tl not in _tl_to_canonical:
+            if _vk not in _vk_to_canonical:
                 _unique_items_ordered.append((_tl, _si, _ri, _rr))
+                _vk_to_canonical[_vk] = (_si, _ri)
                 _tl_to_canonical[_tl] = (_si, _ri)
-                _tl_to_docs[_tl] = [_sa["filename"]]
-            elif _sa["filename"] not in _tl_to_docs[_tl]:
-                _tl_to_docs[_tl].append(_sa["filename"])
+                _vk_to_docs[_vk] = [_sa["filename"]]
+            else:
+                # Variant of an already-seen identifier → point to same canonical
+                _tl_to_canonical[_tl] = _vk_to_canonical[_vk]
+                if _sa["filename"] not in _vk_to_docs[_vk]:
+                    _vk_to_docs[_vk].append(_sa["filename"])
 
     # Init session_state for CANONICAL instances only
     for _tl, _csi, _cri, _crr in _unique_items_ordered:
@@ -4115,8 +4238,11 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
         # Sync canonical session_state → every rr in _analyses
         for _sa in _analyses:
             for _rr in _sa["proposed_redactions"]:
-                _tl = (_rr.get("text") or "").strip().lower()
-                _canon = _tl_to_canonical.get(_tl)
+                _raw = (_rr.get("text") or "").strip()
+                _tl  = _raw.lower()
+                _vk  = _normalise_for_dedup(_raw)
+                # Try exact match first, fall back to variant key
+                _canon = _tl_to_canonical.get(_tl) or _vk_to_canonical.get(_vk)
                 if _canon:
                     _csi, _cri = _canon
                     _rr["approved"]    = st.session_state.get(f"approve_{_csi}_{_cri}", True)
@@ -4152,8 +4278,10 @@ elif tool_mode == "sar" and st.session_state.stage == "review":
         # Re-sync after escalation additions
         for _sa in _analyses:
             for _rr in _sa["proposed_redactions"]:
-                _tl = (_rr.get("text") or "").strip().lower()
-                _canon = _tl_to_canonical.get(_tl)
+                _raw = (_rr.get("text") or "").strip()
+                _tl  = _raw.lower()
+                _vk  = _normalise_for_dedup(_raw)
+                _canon = _tl_to_canonical.get(_tl) or _vk_to_canonical.get(_vk)
                 if _canon:
                     _csi, _cri = _canon
                     _rr["approved"]    = st.session_state.get(f"approve_{_csi}_{_cri}", True)
