@@ -1988,7 +1988,17 @@ def llm_analyse_document(
 
 # ── Variant-normalisation for dedup ──────────────────────────────────────────
 _DEDUP_TITLE_RE = re.compile(
-    r'\b(?:Mr|Mrs|Ms|Miss|Dr|Prof(?:essor)?|Rev|Sir|Lord|Lady|Mx|Cllr|Councillor)\b\.?',
+    r'\b(?:'
+    # Formal titles
+    r'Mr|Mrs|Ms|Miss|Dr|Prof(?:essor)?|Rev|Sir|Lord|Lady|Mx|Cllr|Councillor|'
+    # Relational descriptors that the LLM often prepends to names
+    r'daughter|son|sister|brother|mother|father|mum|dad|mam|'
+    r'wife|husband|partner|carer|guardian|'
+    r'friend|neighbour|colleague|'
+    r'step(?:daughter|son|mother|father|sister|brother)?|'
+    r'half(?:sister|brother)?|'
+    r'ex(?:-wife|-husband|-partner)?'
+    r')\b\.?',
     re.IGNORECASE,
 )
 _DEDUP_MONTH_MAP = {
@@ -2103,7 +2113,7 @@ def _detect_patient_details(texts: list, model: str) -> dict:
         try:
             resp = future.result(timeout=60)
         except FuturesTimeoutError:
-            return {}
+            return {"_error": "timeout — model took too long to respond"}
         finally:
             ex.shutdown(wait=False)
         raw    = resp["message"]["content"].strip()
@@ -2115,9 +2125,9 @@ def _detect_patient_details(texts: list, model: str) -> dict:
                 "nhs_number": str(parsed.get("nhs_number", "") or "").strip(),
                 "address":    str(parsed.get("address",    "") or "").strip(),
             }
-    except Exception:
-        pass
-    return {}
+        return {"_error": f"model returned non-JSON response: {raw[:120]}"}
+    except Exception as _exc:
+        return {"_error": str(_exc)}
 
 
 def classify_document(text: str, model: str) -> str:
@@ -3839,16 +3849,35 @@ if tool_mode == "sar" and st.session_state.stage == "upload":
                 if _det_texts:
                     with st.spinner("🔍 Detecting patient details from documents…"):
                         _det = _detect_patient_details(_det_texts, selected_model)
-                    if _det.get("name"):
+                    if _det.get("_error"):
+                        st.warning(
+                            f"⚠️ Auto-detect failed: {_det['_error']}  \n"
+                            "Check Ollama is running and the model is loaded, "
+                            "then try again — or fill in the fields manually."
+                        )
+                    elif _det.get("name"):
                         st.session_state.pat_det_name    = _det.get("name",       "")
                         st.session_state.pat_det_dob     = _det.get("dob",        "")
                         st.session_state.pat_det_nhs     = _det.get("nhs_number", "")
                         st.session_state.pat_det_address = _det.get("address",    "")
                         st.session_state.pat_det_done    = True
+                        # CRITICAL: delete the widget keys so Streamlit recreates the
+                        # text_input widgets fresh on rerun — if the keys already exist
+                        # in session_state, Streamlit ignores the value= parameter.
+                        for _wk in [
+                            f"pat_det_name_input_{_sv2}",
+                            f"pat_det_dob_input_{_sv2}",
+                            f"pat_det_nhs_input_{_sv2}",
+                            f"pat_det_addr_input_{_sv2}",
+                        ]:
+                            st.session_state.pop(_wk, None)
                         st.rerun()
                     else:
-                        st.warning("Could not detect patient details automatically. "
-                                   "Please fill in the fields manually.")
+                        st.warning(
+                            "Could not detect patient details automatically — the model "
+                            "returned an empty result. Check the model is running in "
+                            "Ollama and try again, or fill in the fields manually."
+                        )
                 else:
                     st.warning("No readable document text found. Upload files first.")
 
