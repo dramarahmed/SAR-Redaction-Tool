@@ -2073,10 +2073,12 @@ def _detect_patient_details(texts: list, model: str) -> dict:
     Ask the LLM to extract the patient's own demographics from a sample of
     document text.  Returns a dict with keys:
       name, dob, nhs_number, address  (all str, empty string if not found).
-    Uses the first 1 500 chars of each of up to five documents.
+    Uses the first 600 chars of each of up to three documents — patient
+    demographics are always in the header, so a short sample is faster and
+    avoids timeout on a cold model load.
     """
     sample = "\n\n---NEXT DOCUMENT---\n\n".join(
-        t[:1500] for t in texts[:5] if (t or "").strip()
+        t[:600] for t in texts[:3] if (t or "").strip()
     )
     if not sample.strip():
         return {}
@@ -2108,12 +2110,13 @@ def _detect_patient_details(texts: list, model: str) -> dict:
                 {"role": "user", "content": prompt},
             ],
             format="json",
-            options={"temperature": 0, "num_predict": 300},
+            options={"temperature": 0, "num_predict": 200},
         )
         try:
-            resp = future.result(timeout=60)
+            resp = future.result(timeout=150)   # 150 s — allows for cold model load
         except FuturesTimeoutError:
-            return {"_error": "timeout — model took too long to respond"}
+            return {"_error": "timeout — model is still loading (can take 90 s on first use). "
+                               "Wait a moment and try again."}
         finally:
             ex.shutdown(wait=False)
         raw    = resp["message"]["content"].strip()
@@ -3847,7 +3850,7 @@ if tool_mode == "sar" and st.session_state.stage == "upload":
                     if (_dt or "").strip():
                         _det_texts.append(_dt)
                 if _det_texts:
-                    with st.spinner("🔍 Detecting patient details from documents…"):
+                    with st.spinner("🔍 Detecting patient details… (first run loads the model — may take up to 90 s)"):
                         _det = _detect_patient_details(_det_texts, selected_model)
                     if _det.get("_error"):
                         st.warning(
