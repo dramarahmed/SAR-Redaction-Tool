@@ -3838,19 +3838,45 @@ if tool_mode == "sar" and st.session_state.stage == "upload":
             st.markdown("&nbsp;")   # vertical alignment spacer
             if st.button("🔍 Auto-detect", use_container_width=True,
                          help="Scan the first few pages of the uploaded documents to detect patient details automatically"):
+                # Lightweight first-page extraction — avoids the full ingest_file()
+                # pipeline (OCR, watermark detection, etc.) which is very slow.
+                # Patient demographics are always on page 1 so we only need the
+                # first 800 chars from the first 3 files.
                 _sample_files = _collect_all_files(
                     st.session_state.get(f"sar_uploader_{_sv2}") or [],
                     folder_path_input,
-                )[:5]
+                )[:3]
                 _det_texts = []
                 for _sf in _sample_files:
                     if getattr(_sf, "_zip_error", None):
                         continue
-                    _, _dt, _, _ = ingest_file(_sf)
-                    if (_dt or "").strip():
-                        _det_texts.append(_dt)
+                    try:
+                        _raw_bytes = _sf.read()
+                        _sf.seek(0)   # reset for later full ingest
+                        _page_txt = ""
+                        if _sf.name.lower().endswith(".pdf"):
+                            import fitz as _fitz
+                            with _fitz.open(stream=_raw_bytes, filetype="pdf") as _pdoc:
+                                for _pg in _pdoc:
+                                    _page_txt += _pg.get_text()
+                                    if len(_page_txt) >= 800:
+                                        break
+                        elif _sf.name.lower().endswith((".txt", ".rtf")):
+                            _page_txt = _raw_bytes.decode("utf-8", errors="replace")
+                        elif _sf.name.lower().endswith(".docx") and DOCX_AVAILABLE:
+                            from docx import Document as _DX
+                            import io as _io
+                            _doc = _DX(_io.BytesIO(_raw_bytes))
+                            for _para in _doc.paragraphs:
+                                _page_txt += _para.text + "\n"
+                                if len(_page_txt) >= 800:
+                                    break
+                        if _page_txt.strip():
+                            _det_texts.append(_page_txt[:800])
+                    except Exception:
+                        pass
                 if _det_texts:
-                    with st.spinner("🔍 Detecting patient details… (first run loads the model — may take up to 90 s)"):
+                    with st.spinner("🔍 Detecting patient details… (may take up to 90 s on first use while model loads)"):
                         _det = _detect_patient_details(_det_texts, selected_model)
                     if _det.get("_error"):
                         st.warning(
